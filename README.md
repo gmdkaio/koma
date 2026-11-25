@@ -1,1 +1,1 @@
-![koma](assets/banner.png)
+![koma](assets/banner.svg)
