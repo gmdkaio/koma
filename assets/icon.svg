@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Official koma mascot icon: transparent floating Chinatsu head with 45-deg tilted blep -->
+  <g transform="translate(256 264) scale(1.22) translate(-256 -248)">
+    <!-- Back layer of Chinatsu's warm chestnut shoulder-length bob -->
+    <path d="M104 244
+             C100 134, 164 68, 256 68
+             C348 68, 412 134, 408 244
+             C406 314, 398 378, 384 422
+             C362 414, 344 398, 334 378
+             C310 388, 284 392, 256 392
+             C228 392, 202 388, 178 378
+             C168 398, 150 414, 128 422
+             C114 378, 106 314, 104 244 Z"
+          fill="#8A5B44" stroke="#151317" stroke-width="5.8" stroke-linejoin="round"/>
+
+    <!-- Chinatsu face -->
+    <path d="M144 236
+             C144 166, 190 128, 256 128
+             C322 128, 368 166, 368 236
+             C366 300, 350 340, 320 364
+             C296 382, 272 392, 256 392
+             C240 392, 216 382, 192 364
+             C162 340, 146 300, 144 236 Z"
+          fill="#FFF0EB" stroke="#151317" stroke-width="5.2" stroke-linejoin="round"/>
+
+    <!-- White eye shapes behind dizzy spirals -->
+    <ellipse cx="198" cy="276" rx="31" ry="29" fill="#FFFFFF"/>
+    <ellipse cx="314" cy="276" rx="31" ry="29" fill="#FFFFFF"/>
+
+    <!-- Bold hand-drawn dizzy spiral eyes (@_@) -->
+    <path d="M167 268
+             C171 245, 202 241, 222 254
+             C236 266, 234 294, 212 303
+             C192 310, 173 298, 175 280
+             C177 265, 196 258, 209 266
+             C217 272, 214 286, 202 287
+             C194 287, 191 278, 198 274"
+          fill="none" stroke="#151317" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <path d="M345 268
+             C341 245, 310 241, 290 254
+             C276 266, 278 294, 300 303
+             C320 310, 339 298, 337 280
+             C335 265, 316 258, 303 266
+             C295 272, 298 286, 310 287
+             C318 287, 321 278, 314 274"
+          fill="none" stroke="#151317" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Vertical pink anime blush hatch lines -->
+    <g stroke="#DC8C8C" stroke-width="3" stroke-linecap="round">
+      <line x1="164" y1="319" x2="162" y2="337"/>
+      <line x1="173" y1="317" x2="171" y2="342"/>
+      <line x1="182" y1="318" x2="180" y2="344"/>
+      <line x1="191" y1="317" x2="190" y2="342"/>
+      <line x1="200" y1="319" x2="199" y2="339"/>
+      <line x1="209" y1="321" x2="208" y2="336"/>
+
+      <line x1="303" y1="321" x2="302" y2="336"/>
+      <line x1="312" y1="319" x2="311" y2="339"/>
+      <line x1="321" y1="317" x2="320" y2="342"/>
+      <line x1="330" y1="318" x2="328" y2="344"/>
+      <line x1="339" y1="317" x2="337" y2="342"/>
+      <line x1="348" y1="319" x2="346" y2="337"/>
+    </g>
+
+    <!-- 45-degree tilted gimmicky blep mouth (right side tilted up, tongue poking out along the tilt) -->
+    <g transform="rotate(-24 256 353)">
+      <!-- Little pink tongue peeking out slightly right of center -->
+      <path d="M251 348
+               C249 367, 258 378, 269 376
+               C279 374, 282 362, 275 349 Z"
+            fill="#F59AA2" stroke="#151317" stroke-width="4.4" stroke-linejoin="round"/>
+      <!-- Subtle tongue crease -->
+      <path d="M263 352 C263 358, 265 363, 267 367"
+            fill="none" stroke="#B95D66" stroke-width="2.6" stroke-linecap="round"/>
+      <!-- Gently arched downturned mouth line (rotated so right side sits higher at ~45 deg vibe) -->
+      <path d="M233 355 Q256 341 281 354"
+            fill="none" stroke="#151317" stroke-width="4.8" stroke-linecap="round"/>
+    </g>
+
+    <!-- Front chestnut hair: airy wispy bangs + side locks -->
+    <path d="M116 242
+             C114 140, 170 68, 256 68
+             C342 68, 398 140, 396 242
+             C394 304, 386 364, 368 416
+             L356 382
+             C346 404, 336 418, 328 422
+             C344 370, 356 312, 354 244
+             C346 262, 338 272, 332 272
+             C330 232, 320 192, 306 168
+             C304 202, 296 234, 282 252
+             C284 226, 284 196, 280 172
+             C272 214, 264 252, 254 268
+             C244 250, 236 216, 232 178
+             C228 206, 226 232, 228 248
+             C214 226, 206 196, 204 166
+             C192 198, 178 236, 170 264
+             C164 248, 160 228, 158 214
+             C156 296, 168 364, 184 422
+             C174 416, 164 402, 156 382
+             L144 416
+             C126 364, 118 304, 116 242 Z"
+          fill="#A67054" stroke="#151317" stroke-width="5.5" stroke-linejoin="round"/>
+
+    <!-- Fine hand-drawn hair flow lines -->
+    <g fill="none" stroke="#151317" stroke-width="3.6" stroke-linecap="round">
+      <path d="M182 104 C156 128, 138 172, 134 224"/>
+      <path d="M222 114 C212 138, 206 160, 204 182"/>
+      <path d="M259 138 C259 166, 257 196, 254 224"/>
+      <path d="M294 112 C302 138, 308 162, 310 186"/>
+      <path d="M330 102 C358 126, 376 172, 378 228"/>
+    </g>
+
+    <!-- Thin curved eyebrows visible right through bangs -->
+    <path d="M174 220 Q198 207 222 216" fill="none" stroke="#151317" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M290 216 Q314 207 338 220" fill="none" stroke="#151317" stroke-width="3.4" stroke-linecap="round"/>
+  </g>
+</svg>
