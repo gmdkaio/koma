@@ -984,6 +984,8 @@ pub fn build_ui(app: &adw::Application) {
     topbar.append(&inspector_toggle);
 
     let topbar_handle = gtk4::WindowHandle::new();
+    topbar_handle.set_valign(gtk4::Align::Start);
+    topbar_handle.set_hexpand(true);
     topbar_handle.set_child(Some(&topbar));
 
     // === MULTI-SELECT FLOATING BAR (ONLY VISIBLE WHEN MULTI-SELECTING) ===
@@ -1025,7 +1027,7 @@ pub fn build_ui(app: &adw::Application) {
     batch_bar.append(&batch_del_btn);
     batch_bar.append(&batch_esc_btn);
 
-    // === MAIN LAYOUT ASSEMBLY ===
+    // === MAIN LAYOUT ASSEMBLY (floating glass islands + sticky overlay topbar) ===
     // 0px-height width sensor triggers justified row re-packing on resize or Inspector toggle.
     let width_sensor = gtk4::DrawingArea::new();
     width_sensor.set_content_height(0);
@@ -1034,10 +1036,12 @@ pub fn build_ui(app: &adw::Application) {
     let canvas_overlay = gtk4::Overlay::new();
     canvas_overlay.set_vexpand(true);
     canvas_overlay.set_hexpand(true);
+    canvas_overlay.add_overlay(&topbar_handle);
     canvas_overlay.add_overlay(&batch_bar);
 
     let canvas_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    canvas_col.add_css_class("koma-canvas-bg");
+    canvas_col.add_css_class("koma-gallery-island");
+    canvas_col.set_overflow(gtk4::Overflow::Hidden);
     canvas_col.set_hexpand(true);
     canvas_col.set_vexpand(true);
     canvas_col.append(&width_sensor);
@@ -1047,31 +1051,25 @@ pub fn build_ui(app: &adw::Application) {
         .sidebar_position(gtk4::PackType::End)
         .pin_sidebar(true)
         .show_sidebar(false)
-        .min_sidebar_width(248.0)
-        .max_sidebar_width(276.0)
+        .min_sidebar_width(262.0)
+        .max_sidebar_width(288.0)
         .hexpand(true)
         .vexpand(true)
         .content(&canvas_col)
         .build();
 
-    let gallery_pane = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    gallery_pane.set_hexpand(true);
-    gallery_pane.set_vexpand(true);
-    gallery_pane.append(&topbar_handle);
-    gallery_pane.append(&inspector_split);
-
     // Lightbox lives inside the right pane so the left channel sidebar remains visible.
     let content_stack = gtk4::Stack::new();
     content_stack.set_hexpand(true);
     content_stack.set_vexpand(true);
-    content_stack.add_named(&gallery_pane, Some("gallery"));
+    content_stack.add_named(&inspector_split, Some("gallery"));
 
     let left_split = adw::OverlaySplitView::builder()
         .sidebar_position(gtk4::PackType::Start)
         .pin_sidebar(true)
         .show_sidebar(true)
-        .min_sidebar_width(214.0)
-        .max_sidebar_width(214.0)
+        .min_sidebar_width(212.0)
+        .max_sidebar_width(212.0)
         .sidebar_width_fraction(0.0)
         .sidebar(&sidebar)
         .content(&content_stack)
@@ -1087,6 +1085,12 @@ pub fn build_ui(app: &adw::Application) {
         .default_height(800)
         .content(&toast_overlay)
         .build();
+    window.add_css_class("koma-window");
+    let saved_theme = store
+        .borrow()
+        .get_setting("theme")
+        .unwrap_or_else(|| "obsidian".to_string());
+    apply_theme_class(&window, &saved_theme);
 
     // Responsive breakpoints for narrow niri splits.
     let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
@@ -1283,17 +1287,9 @@ pub fn build_ui(app: &adw::Application) {
     });
 
     let c = ctx.clone();
+    let settings_anchor = settings_btn.clone();
     settings_btn.connect_clicked(move |_| {
-        let dir = c.store.borrow().root().display().to_string();
-        let alert = adw::AlertDialog::builder()
-            .heading("koma Storage")
-            .body(format!(
-                "Data folder: {dir}\nSync backend: Local only (Google Drive sync comes in Step 4).\n\nShortcuts: Ctrl+V paste, Ctrl+K switch channel, Ctrl+A select all, Space open full lightbox, double-click toggle Inspector.\nRight-click any channel in the sidebar to rename, merge, or delete it."
-            ))
-            .build();
-        alert.add_response("ok", "OK");
-        alert.set_default_response(Some("ok"));
-        alert.present(Some(&c.window));
+        show_settings_popover(&settings_anchor, &c);
     });
 
     let c = ctx.clone();
@@ -1553,6 +1549,115 @@ fn watch_user_gtk_css(display: &gdk::Display) -> Option<gio::FileMonitor> {
         }
     });
     Some(monitor)
+}
+
+const BUILTIN_THEMES: &[(&str, &str)] = &[
+    ("obsidian", "Obsidian"),
+    ("inir", "iNiR Glass"),
+    ("monochrome", "Monochrome"),
+    ("dusk", "Warm Dusk"),
+];
+
+fn apply_theme_class(window: &adw::ApplicationWindow, theme_id: &str) {
+    for &(id, _) in BUILTIN_THEMES {
+        if id != "inir" {
+            window.remove_css_class(&format!("theme-{id}"));
+        }
+    }
+    if theme_id != "inir" && BUILTIN_THEMES.iter().any(|&(id, _)| id == theme_id) {
+        window.add_css_class(&format!("theme-{theme_id}"));
+    }
+}
+
+fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
+    let popover = gtk4::Popover::new();
+    popover.add_css_class("koma-settings-pop");
+    popover.set_parent(anchor);
+    popover.set_position(gtk4::PositionType::Top);
+
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 10);
+    root.set_size_request(248, -1);
+
+    let theme_heading = gtk4::Label::builder()
+        .label("THEME")
+        .xalign(0.0)
+        .css_classes(["koma-section-label"])
+        .build();
+    root.append(&theme_heading);
+
+    let current_theme = ctx
+        .store
+        .borrow()
+        .get_setting("theme")
+        .unwrap_or_else(|| "obsidian".to_string());
+
+    let theme_grid = gtk4::Grid::builder()
+        .column_spacing(6)
+        .row_spacing(6)
+        .column_homogeneous(true)
+        .build();
+
+    let mut group_head: Option<gtk4::ToggleButton> = None;
+    for (idx, &(id, label)) in BUILTIN_THEMES.iter().enumerate() {
+        let btn = gtk4::ToggleButton::builder()
+            .label(label)
+            .active(current_theme == id)
+            .css_classes(["flat", "koma-theme-btn"])
+            .build();
+        if let Some(ref head) = group_head {
+            btn.set_group(Some(head));
+        } else {
+            group_head = Some(btn.clone());
+        }
+        let ctx_t = ctx.clone();
+        btn.connect_toggled(move |b| {
+            if b.is_active() {
+                apply_theme_class(&ctx_t.window, id);
+                let _ = ctx_t.store.borrow().set_setting("theme", id);
+            }
+        });
+        theme_grid.attach(&btn, (idx % 2) as i32, (idx / 2) as i32, 1, 1);
+    }
+    root.append(&theme_grid);
+
+    let sep1 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    sep1.add_css_class("koma-switcher-sep");
+    root.append(&sep1);
+
+    let storage_heading = gtk4::Label::builder()
+        .label("STORAGE")
+        .xalign(0.0)
+        .css_classes(["koma-section-label"])
+        .build();
+    let dir_label = gtk4::Label::builder()
+        .label(ctx.store.borrow().root().display().to_string())
+        .xalign(0.0)
+        .ellipsize(gtk4::pango::EllipsizeMode::Start)
+        .css_classes(["koma-meta-val"])
+        .build();
+    root.append(&storage_heading);
+    root.append(&dir_label);
+
+    let sep2 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    sep2.add_css_class("koma-switcher-sep");
+    root.append(&sep2);
+
+    let keys_heading = gtk4::Label::builder()
+        .label("SHORTCUTS")
+        .xalign(0.0)
+        .css_classes(["koma-section-label"])
+        .build();
+    let keys_body = gtk4::Label::builder()
+        .label("Ctrl+V paste · Ctrl+K jump\nCtrl+A select all · Space lightbox\nDouble-click toggle Inspector")
+        .xalign(0.0)
+        .css_classes(["koma-tabular"])
+        .build();
+    root.append(&keys_heading);
+    root.append(&keys_body);
+
+    popover.set_child(Some(&root));
+    popover.connect_closed(|p| p.unparent());
+    popover.popup();
 }
 
 fn format_int(n: i64) -> String {

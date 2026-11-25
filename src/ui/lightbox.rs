@@ -32,6 +32,7 @@ impl LightboxView {
     ) -> Rc<Self> {
         let root_widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         root_widget.add_css_class("koma-lightbox");
+        root_widget.set_overflow(gtk4::Overflow::Hidden);
 
         let topbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         topbar.add_css_class("koma-lightbox-bar");

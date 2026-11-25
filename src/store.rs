@@ -144,6 +144,11 @@ impl Store {
 
             CREATE INDEX IF NOT EXISTS idx_images_channel_created
                 ON images(channel_id, created_at, id);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             ",
         )
         .map_err(|e| format!("failed to initialize schema: {e}"))?;
@@ -153,6 +158,29 @@ impl Store {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| format!("failed to save setting {key}: {e}"))?;
+        Ok(())
     }
 
     pub fn list_channels(&self) -> Result<Vec<Channel>, String> {

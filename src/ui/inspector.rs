@@ -118,7 +118,7 @@ impl InspectorPane {
         let copy_btn = gtk4::Button::builder()
             .child(&copy_inner)
             .hexpand(true)
-            .css_classes(["flat", "koma-action-btn"])
+            .css_classes(["flat", "koma-accent-btn"])
             .build();
 
         let open_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);

@@ -1,98 +1,172 @@
-/* Semantic theming only: inherits --window-bg-color, --sidebar-bg-color,
-   --card-bg-color, --popover-bg-color, --dialog-bg-color, --accent-bg-color,
-   --accent-color, --accent-fg-color from ~/.config/gtk-4.0/gtk.css */
+/* koma glass + floating islands styling.
+   Default ("inir") inherits live ~/.config/gtk-4.0/gtk.css variables.
+   Built-in theme classes on window.koma-window override tokens cleanly. */
 
-/* === SHELL SURFACES (tonal layering, zero GTK bevels) === */
+window.koma-window,
+window.koma-window.background {
+    --k-bg: var(--window-bg-color);
+    --k-fg: var(--window-fg-color);
+    --k-accent: var(--accent-bg-color);
+    --k-accent-text: var(--accent-color);
+    --k-accent-fg: var(--accent-fg-color);
+    /* Inverted glass: sidebar & inspector stay opaque for crisp legibility;
+       gallery & shell stay translucent so niri's background blur shows smoothly. */
+    --k-glass-shell: color-mix(in srgb, var(--k-bg) 56%, transparent);
+    --k-glass-sidebar: color-mix(in srgb, var(--k-bg) 95%, transparent);
+    --k-glass-island-alpha: color-mix(in srgb, var(--k-bg) 62%, transparent);
+    --k-glass-inspector: color-mix(in srgb, var(--k-bg) 94%, transparent);
+    --k-glass-topbar: color-mix(in srgb, var(--k-bg) 82%, transparent);
+    --k-glass-popover: color-mix(in srgb, var(--k-bg) 95%, black 5%);
 
-.koma-sidebar {
-    background-color: var(--sidebar-bg-color);
-    border-right: 1px solid color-mix(in srgb, currentColor 6%, transparent);
-    min-width: 214px;
+    background-color: var(--k-glass-shell);
+    color: var(--k-fg);
+    font-family: "Adwaita Sans", "Inter", system-ui, sans-serif;
 }
 
-.koma-canvas-bg {
-    background-color: color-mix(in srgb, var(--window-bg-color) 76%, black 24%);
+/* Built-in Theme: Obsidian (default — opaque smoked sidebar, smooth-blur darkroom gallery) */
+window.koma-window.theme-obsidian,
+window.koma-window.background.theme-obsidian {
+    --k-bg: #0a0b0f;
+    --k-fg: #e2e5ec;
+    --k-accent: #d8dce4;
+    --k-accent-text: #f4f6fa;
+    --k-accent-fg: #08090c;
+    --k-glass-shell: rgba(8, 9, 12, 0.58);
+    --k-glass-sidebar: rgba(11, 13, 17, 0.96);
+    --k-glass-island-alpha: rgba(8, 9, 13, 0.66);
+    --k-glass-inspector: rgba(11, 13, 17, 0.95);
+    --k-glass-topbar: rgba(10, 11, 15, 0.84);
+    --k-glass-popover: rgba(14, 16, 21, 0.97);
+}
+
+/* Built-in Theme: Monochrome Glass (editorial neutral ink, opaque sidebar, softer glass gallery) */
+window.koma-window.theme-monochrome,
+window.koma-window.background.theme-monochrome {
+    --k-bg: #0e1014;
+    --k-fg: #e6e9ef;
+    --k-accent: #e6e9ef;
+    --k-accent-text: #ffffff;
+    --k-accent-fg: #0b0d11;
+    --k-glass-shell: rgba(13, 15, 20, 0.52);
+    --k-glass-sidebar: rgba(15, 17, 22, 0.94);
+    --k-glass-island-alpha: rgba(10, 12, 16, 0.58);
+    --k-glass-inspector: rgba(15, 17, 22, 0.93);
+    --k-glass-topbar: rgba(13, 15, 20, 0.80);
+    --k-glass-popover: rgba(16, 18, 24, 0.96);
+}
+
+/* Built-in Theme: Warm Dusk Glass (charcoal-espresso opaque sidebar, warm translucent gallery) */
+window.koma-window.theme-dusk,
+window.koma-window.background.theme-dusk {
+    --k-bg: #151111;
+    --k-fg: #ede6e0;
+    --k-accent: #e6c2a5;
+    --k-accent-text: #f2d5be;
+    --k-accent-fg: #24140a;
+    --k-glass-shell: rgba(21, 16, 16, 0.54);
+    --k-glass-sidebar: rgba(20, 16, 16, 0.95);
+    --k-glass-island-alpha: rgba(14, 11, 11, 0.60);
+    --k-glass-inspector: rgba(20, 16, 16, 0.94);
+    --k-glass-topbar: rgba(18, 14, 14, 0.82);
+    --k-glass-popover: rgba(24, 19, 19, 0.96);
+}
+
+/* Ensure OverlaySplitView does not paint an opaque solid layer over our glass shell */
+window.koma-window overlay-split-view,
+window.koma-window overlay-split-view > * {
+    background-color: transparent;
+}
+
+/* === SIDEBAR (opaque smoked glass for 100% crisp legibility) === */
+
+.koma-sidebar {
+    background-color: var(--k-glass-sidebar);
+    border-right: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    min-width: 212px;
 }
 
 .koma-wordmark {
+    font-family: "Space Grotesk", "Adwaita Sans", sans-serif;
     font-weight: 700;
-    font-size: 15px;
+    font-size: 16px;
     letter-spacing: -0.03em;
 }
 
 .koma-status-inline {
-    font-size: 11px;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-size: 10.5px;
     font-weight: 500;
-    opacity: 0.54;
+    opacity: 0.52;
 }
 
 .koma-sync-dot {
     min-width: 6px;
     min-height: 6px;
     border-radius: 999px;
-    background-color: var(--accent-bg-color);
+    background-color: var(--k-accent);
 }
 
-/* === SIDEBAR CONTROLS === */
-
 .koma-jump-btn {
-    padding: 5px 9px;
-    border-radius: 4px;
-    background-color: color-mix(in srgb, currentColor 4%, transparent);
-    border: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    padding: 6px 10px;
+    border-radius: 6px;
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
     box-shadow: none;
     min-height: 0;
+    font-size: 12.5px;
 }
 
 .koma-jump-btn:hover {
-    background-color: color-mix(in srgb, currentColor 7%, transparent);
-    border-color: color-mix(in srgb, currentColor 11%, transparent);
+    background-color: color-mix(in srgb, currentColor 9%, transparent);
+    border-color: color-mix(in srgb, currentColor 13%, transparent);
 }
 
 .koma-home-btn {
-    border-radius: 4px;
-    padding: 5px 9px;
+    border-radius: 6px;
+    padding: 6px 10px;
     font-size: 13px;
     font-weight: 500;
     border: none;
     box-shadow: none;
     min-height: 0;
-    opacity: 0.76;
+    opacity: 0.72;
+    transition: background-color 90ms ease, opacity 90ms ease;
 }
 
 .koma-home-btn:hover {
-    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
     opacity: 1;
 }
 
 .koma-home-active,
 .koma-home-active:hover {
-    background-color: color-mix(in srgb, var(--accent-bg-color) 13%, transparent);
-    box-shadow: inset 2px 0 0 var(--accent-bg-color);
-    color: var(--accent-color);
+    background-color: color-mix(in srgb, var(--k-accent) 16%, transparent);
+    box-shadow: none;
+    color: var(--k-accent-text);
     font-weight: 600;
     opacity: 1;
 }
 
 .koma-home-active label,
 .koma-home-active image {
-    color: var(--accent-color);
+    color: var(--k-accent-text);
 }
 
 .koma-kbd {
     padding: 1px 5px;
-    border-radius: 3px;
+    border-radius: 4px;
     font-size: 10px;
-    font-family: monospace;
-    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
     opacity: 0.65;
 }
 
 .koma-section-label {
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    opacity: 0.42;
+    letter-spacing: 0.12em;
+    opacity: 0.40;
 }
 
 .koma-sidebar-list {
@@ -100,7 +174,7 @@
 }
 
 .koma-sidebar-list > row {
-    border-radius: 4px;
+    border-radius: 6px;
     margin: 1px 8px;
     padding: 0;
     font-size: 13px;
@@ -109,19 +183,20 @@
 }
 
 .koma-sidebar-list > row:hover {
-    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
 }
 
+/* Clean flat selection pill (no curved left inset bar) */
 .koma-sidebar-list > row:selected,
 .koma-sidebar-list > row:selected:hover {
-    background-color: color-mix(in srgb, var(--accent-bg-color) 13%, transparent);
-    box-shadow: inset 2px 0 0 var(--accent-bg-color);
-    color: var(--accent-color);
+    background-color: color-mix(in srgb, var(--k-accent) 16%, transparent);
+    box-shadow: none;
+    color: var(--k-accent-text);
     font-weight: 600;
 }
 
 .koma-sidebar-list > row:selected label {
-    color: var(--accent-color);
+    color: var(--k-accent-text);
     opacity: 1;
 }
 
@@ -132,39 +207,79 @@
 
 .koma-tabular {
     font-variant-numeric: tabular-nums;
-    font-family: monospace;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
     font-size: 11px;
-    opacity: 0.46;
+    opacity: 0.48;
 }
 
 .koma-sidebar-footer {
-    border-top: 1px solid color-mix(in srgb, currentColor 6%, transparent);
-    padding: 7px 10px 7px 12px;
+    border-top: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    padding: 8px 10px 8px 14px;
     font-size: 11.5px;
 }
 
-/* === GHOST / UTILITY BUTTONS (no clunky GTK boxes) === */
+/* === FLOATING GLASS ISLANDS === */
+
+.koma-gallery-island {
+    background-color: var(--k-glass-island-alpha);
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    margin: 8px 8px 8px 0;
+}
+
+.koma-inspector {
+    background-color: var(--k-glass-inspector);
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    margin: 8px 8px 8px 0;
+    padding: 13px 14px;
+}
+
+/* === STICKY FROSTED OVERLAY TOPBAR (images scroll underneath) === */
+
+.koma-topbar {
+    background-color: var(--k-glass-topbar);
+    border-bottom: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    padding: 8px 14px;
+}
+
+.koma-channel-title {
+    font-family: "Space Grotesk", "Adwaita Sans", sans-serif;
+    font-size: 15.5px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.koma-title-count {
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    opacity: 0.46;
+    margin-left: 3px;
+}
+
+/* === BORDERLESS GHOST CONTROLS === */
 
 .koma-ghost-btn {
     background: transparent;
     border: none;
     box-shadow: none;
-    border-radius: 4px;
-    min-width: 26px;
-    min-height: 26px;
-    padding: 3px 6px;
-    opacity: 0.62;
+    border-radius: 5px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 4px 6px;
+    opacity: 0.64;
     transition: background-color 90ms ease, opacity 90ms ease;
 }
 
 .koma-ghost-btn:hover {
-    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
     opacity: 1;
 }
 
 .koma-ghost-btn:checked {
-    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
-    color: var(--accent-color);
+    background-color: color-mix(in srgb, var(--k-accent) 18%, transparent);
+    color: var(--k-accent-text);
     opacity: 1;
 }
 
@@ -172,9 +287,9 @@
     background: transparent;
     border: 1px solid transparent;
     box-shadow: none;
-    border-radius: 4px;
-    padding: 3px 9px;
-    min-height: 26px;
+    border-radius: 5px;
+    padding: 3px 10px;
+    min-height: 28px;
     font-size: 12px;
     font-weight: 500;
     opacity: 0.72;
@@ -182,14 +297,14 @@
 }
 
 .koma-ghost-text:hover {
-    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
     opacity: 1;
 }
 
 .koma-ghost-text:checked {
-    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
-    border-color: color-mix(in srgb, var(--accent-bg-color) 32%, transparent);
-    color: var(--accent-color);
+    background-color: color-mix(in srgb, var(--k-accent) 18%, transparent);
+    border-color: color-mix(in srgb, var(--k-accent) 32%, transparent);
+    color: var(--k-accent-text);
     font-weight: 600;
     opacity: 1;
 }
@@ -197,35 +312,13 @@
 .koma-vsep {
     min-width: 1px;
     min-height: 14px;
-    background-color: color-mix(in srgb, currentColor 10%, transparent);
+    background-color: color-mix(in srgb, currentColor 11%, transparent);
     margin: 0 3px;
 }
 
-/* === COMPACT SINGLE-LINE TOPBAR === */
-
-.koma-topbar {
-    background-color: var(--window-bg-color);
-    border-bottom: 1px solid color-mix(in srgb, currentColor 6%, transparent);
-    padding: 7px 14px;
-}
-
-.koma-channel-title {
-    font-size: 14.5px;
-    font-weight: 700;
-    letter-spacing: -0.015em;
-}
-
-.koma-title-count {
-    font-family: monospace;
-    font-variant-numeric: tabular-nums;
-    font-size: 11.5px;
-    opacity: 0.45;
-    margin-left: 2px;
-}
-
 .koma-segmented {
-    background-color: color-mix(in srgb, currentColor 5%, transparent);
-    border-radius: 4px;
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
+    border-radius: 6px;
     padding: 2px;
 }
 
@@ -233,9 +326,9 @@
     background: transparent;
     border: none;
     box-shadow: none;
-    border-radius: 3px;
+    border-radius: 4px;
     min-width: 26px;
-    min-height: 22px;
+    min-height: 24px;
     padding: 2px 6px;
     opacity: 0.55;
 }
@@ -245,11 +338,11 @@
 }
 
 .koma-segmented button:checked {
-    background-color: color-mix(in srgb, currentColor 12%, transparent);
+    background-color: color-mix(in srgb, currentColor 14%, transparent);
     opacity: 1;
 }
 
-/* Hairline precision zoom slider */
+/* Hairline zoom slider */
 .koma-slider {
     padding: 0 4px;
 }
@@ -257,36 +350,31 @@
 .koma-slider trough {
     min-height: 2px;
     border-radius: 1px;
-    background-color: color-mix(in srgb, currentColor 15%, transparent);
+    background-color: color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .koma-slider highlight {
     min-height: 2px;
     border-radius: 1px;
-    background-color: color-mix(in srgb, currentColor 55%, transparent);
+    background-color: color-mix(in srgb, var(--k-accent) 72%, transparent);
 }
 
 .koma-slider slider {
-    min-width: 8px;
-    min-height: 8px;
-    margin: -3px;
-    border-radius: 1px;
-    background-color: currentColor;
-    opacity: 0.78;
+    min-width: 9px;
+    min-height: 9px;
+    margin: -3.5px;
+    border-radius: 2px;
+    background-color: var(--k-accent);
     box-shadow: none;
     border: none;
-}
-
-.koma-slider:hover slider {
-    background-color: var(--accent-bg-color);
-    opacity: 1;
 }
 
 /* === SHARP-CORNER EDITORIAL GALLERY === */
 
 .koma-gallery-list {
     background: transparent;
-    padding: 10px 14px 32px 14px;
+    /* Top padding clears the floating sticky glass header while images scroll under it */
+    padding: 54px 14px 36px 14px;
     outline: none;
 }
 
@@ -307,24 +395,23 @@
 }
 
 .koma-tile-frame {
-    background-color: color-mix(in srgb, var(--card-bg-color) 70%, black 30%);
+    background-color: color-mix(in srgb, var(--k-bg) 60%, black 40%);
     border-radius: 0px;
     box-shadow: none;
-    transition: box-shadow 90ms ease;
+    transition: box-shadow 100ms ease;
 }
 
 .koma-tile-frame:hover {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 42%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent);
 }
 
 .koma-tile-selected .koma-tile-frame {
-    box-shadow: inset 0 0 0 2px var(--accent-bg-color);
+    box-shadow: inset 0 0 0 2px var(--k-accent);
 }
 
-/* Hover-only filename scrim inside bottom of tile (zero permanent text clutter) */
 .koma-tile-scrim {
-    background-image: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.35) 60%, transparent);
-    padding: 14px 7px 5px 7px;
+    background-image: linear-gradient(to top, rgba(6, 8, 12, 0.82), rgba(6, 8, 12, 0.36) 60%, transparent);
+    padding: 16px 8px 6px 8px;
     opacity: 0;
     transition: opacity 110ms ease;
 }
@@ -335,71 +422,72 @@
 }
 
 .koma-tile-caption {
-    font-family: monospace;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
     font-size: 10.5px;
-    color: rgba(255, 255, 255, 0.92);
+    color: rgba(255, 255, 255, 0.94);
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 .koma-tile-ch-tag {
     padding: 2px 6px;
     margin: 5px;
-    border-radius: 2px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
     font-size: 10px;
     font-weight: 600;
-    background-color: rgba(12, 14, 18, 0.76);
-    color: var(--accent-color);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background-color: rgba(10, 12, 16, 0.78);
+    color: var(--k-accent-text);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     min-height: 0;
 }
 
 .koma-tile-ch-tag:hover {
-    background-color: var(--accent-bg-color);
-    color: var(--accent-fg-color);
+    background-color: var(--k-accent);
+    color: var(--k-accent-fg);
 }
 
 .koma-check-badge {
     min-width: 18px;
     min-height: 18px;
     border-radius: 2px;
-    background-color: var(--accent-bg-color);
-    color: var(--accent-fg-color);
+    background-color: var(--k-accent);
+    color: var(--k-accent-fg);
     font-size: 11px;
     font-weight: 700;
     margin: 5px;
 }
 
 .koma-timeline-title {
-    font-size: 11.5px;
+    font-family: "Space Grotesk", "Adwaita Sans", sans-serif;
+    font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.06em;
-    opacity: 0.82;
+    letter-spacing: 0.08em;
+    opacity: 0.85;
 }
 
 .koma-timeline-rule {
     min-height: 1px;
-    background-color: color-mix(in srgb, currentColor 8%, transparent);
+    background-color: color-mix(in srgb, currentColor 9%, transparent);
 }
 
-/* === FLOATING MULTI-SELECT BAR === */
+/* === FLOATING BATCH BAR === */
 
 .koma-floating-dock {
     padding: 6px 8px 6px 14px;
-    border-radius: 6px;
-    background-color: color-mix(in srgb, var(--popover-bg-color) 96%, black 4%);
-    border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    border-radius: 8px;
+    background-color: var(--k-glass-popover);
+    border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
     margin-bottom: 16px;
 }
 
 .koma-accent-btn {
-    background-color: var(--accent-bg-color);
-    color: var(--accent-fg-color);
+    background-color: var(--k-accent);
+    color: var(--k-accent-fg);
     border: none;
     box-shadow: none;
-    border-radius: 4px;
-    padding: 5px 12px;
+    border-radius: 5px;
+    padding: 6px 12px;
     font-size: 12px;
     font-weight: 700;
     min-height: 0;
@@ -409,30 +497,24 @@
     filter: brightness(1.06);
 }
 
-/* === EDITORIAL RIGHT INSPECTOR === */
-
-.koma-inspector {
-    background-color: var(--sidebar-bg-color);
-    border-left: 1px solid color-mix(in srgb, currentColor 6%, transparent);
-    padding: 12px 14px;
-}
+/* === INSPECTOR === */
 
 .koma-inspector-preview {
-    background-color: color-mix(in srgb, var(--card-bg-color) 65%, black 35%);
+    background-color: color-mix(in srgb, var(--k-bg) 55%, black 45%);
     border-radius: 0px;
-    border: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
 }
 
 .koma-inspector-filename {
-    font-family: monospace;
-    font-size: 12.5px;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-size: 12px;
     font-weight: 600;
 }
 
 .koma-meta-card {
-    background-color: color-mix(in srgb, currentColor 3%, transparent);
-    border: 1px solid color-mix(in srgb, currentColor 6%, transparent);
-    border-radius: 4px;
+    background-color: color-mix(in srgb, currentColor 3.5%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    border-radius: 6px;
     padding: 10px 11px;
 }
 
@@ -442,16 +524,16 @@
 }
 
 .koma-meta-val {
-    font-family: monospace;
-    font-size: 11.5px;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-size: 11px;
     opacity: 0.88;
 }
 
 .koma-action-btn {
-    background-color: color-mix(in srgb, currentColor 6%, transparent);
-    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 9%, transparent);
     box-shadow: none;
-    border-radius: 4px;
+    border-radius: 5px;
     padding: 6px 10px;
     min-height: 0;
     font-size: 12px;
@@ -459,15 +541,15 @@
 }
 
 .koma-action-btn:hover {
-    background-color: color-mix(in srgb, currentColor 11%, transparent);
+    background-color: color-mix(in srgb, currentColor 13%, transparent);
 }
 
 .koma-action-subtle {
     background: transparent;
     border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
     box-shadow: none;
-    border-radius: 4px;
-    padding: 5px 10px;
+    border-radius: 5px;
+    padding: 6px 10px;
     min-height: 0;
     font-size: 12px;
     font-weight: 500;
@@ -475,7 +557,7 @@
 }
 
 .koma-action-subtle:hover {
-    background-color: color-mix(in srgb, currentColor 6%, transparent);
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
     opacity: 1;
 }
 
@@ -487,30 +569,65 @@
 }
 
 .koma-chip {
-    padding: 3px 8px;
-    border-radius: 3px;
-    font-family: monospace;
-    font-size: 11.5px;
-    background-color: color-mix(in srgb, currentColor 4%, transparent);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-size: 11px;
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
     border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
     box-shadow: none;
     min-height: 0;
-    opacity: 0.8;
+    opacity: 0.82;
 }
 
 .koma-chip:hover {
-    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
-    border-color: color-mix(in srgb, var(--accent-bg-color) 35%, transparent);
-    color: var(--accent-color);
+    background-color: color-mix(in srgb, var(--k-accent) 18%, transparent);
+    border-color: color-mix(in srgb, var(--k-accent) 34%, transparent);
+    color: var(--k-accent-text);
+    opacity: 1;
+}
+
+/* === THEME & SETTINGS POPOVER === */
+
+.koma-settings-pop > contents {
+    background-color: var(--k-glass-popover);
+    border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    border-radius: 8px;
+    padding: 12px 14px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+.koma-theme-btn {
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    box-shadow: none;
+    border-radius: 5px;
+    padding: 6px 10px;
+    min-height: 0;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 0.78;
+}
+
+.koma-theme-btn:hover {
+    background-color: color-mix(in srgb, currentColor 10%, transparent);
+    opacity: 1;
+}
+
+.koma-theme-btn:checked {
+    background-color: color-mix(in srgb, var(--k-accent) 18%, transparent);
+    border-color: color-mix(in srgb, var(--k-accent) 42%, transparent);
+    color: var(--k-accent-text);
+    font-weight: 600;
     opacity: 1;
 }
 
 /* === COMMAND PALETTE (Ctrl+K) === */
 
 .koma-switcher {
-    background-color: color-mix(in srgb, var(--dialog-bg-color) 92%, black 8%);
-    border-radius: 6px;
-    border: 1px solid color-mix(in srgb, currentColor 11%, transparent);
+    background-color: var(--k-glass-popover);
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
 }
 
 .koma-switcher-entry {
@@ -518,7 +635,7 @@
     border: none;
     box-shadow: none;
     outline: none;
-    font-size: 14.5px;
+    font-size: 14px;
     padding: 6px 2px;
     min-height: 0;
 }
@@ -530,31 +647,34 @@
 
 .koma-switcher-thumb {
     border-radius: 0px;
-    background-color: var(--card-bg-color);
+    background-color: color-mix(in srgb, var(--k-bg) 60%, black 40%);
 }
 
 .koma-switcher-sep {
     min-height: 1px;
-    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
 }
 
-/* === FULL-SIZE LIGHTBOX === */
+/* === FULL-SIZE LIGHTBOX (floats inside island) === */
 
 .koma-lightbox {
-    background-color: color-mix(in srgb, var(--window-bg-color) 65%, black 35%);
+    background-color: color-mix(in srgb, var(--k-bg) 78%, black 18%);
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    margin: 8px 8px 8px 0;
 }
 
 .koma-lightbox-bar {
     padding: 8px 14px;
-    background-color: color-mix(in srgb, var(--window-bg-color) 88%, black 12%);
-    border-bottom: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    background-color: var(--k-glass-topbar);
+    border-bottom: 1px solid color-mix(in srgb, currentColor 7%, transparent);
 }
 
 .koma-lightbox-nav {
-    background-color: rgba(12, 14, 18, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background-color: rgba(10, 12, 16, 0.58);
+    border: 1px solid rgba(255, 255, 255, 0.09);
     box-shadow: none;
-    border-radius: 4px;
+    border-radius: 5px;
     min-width: 34px;
     min-height: 48px;
     padding: 0;
@@ -563,14 +683,14 @@
 }
 
 .koma-lightbox-nav:hover {
-    background-color: rgba(12, 14, 18, 0.85);
+    background-color: rgba(10, 12, 16, 0.88);
     opacity: 1;
 }
 
 .koma-filmstrip {
     padding: 8px 14px;
-    background-color: color-mix(in srgb, var(--window-bg-color) 88%, black 12%);
-    border-top: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    background-color: var(--k-glass-topbar);
+    border-top: 1px solid color-mix(in srgb, currentColor 7%, transparent);
 }
 
 .koma-filmstrip-item {
@@ -587,6 +707,6 @@
 
 .koma-filmstrip-active,
 .koma-filmstrip-active:hover {
-    border-color: var(--accent-bg-color);
+    border-color: var(--k-accent);
     opacity: 1;
 }

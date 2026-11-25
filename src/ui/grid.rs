@@ -148,9 +148,9 @@ impl GridCanvas {
             .child(&list_view)
             .build();
 
-        let timeline_box = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
-        timeline_box.set_margin_top(12);
-        timeline_box.set_margin_bottom(32);
+        let timeline_box = gtk4::Box::new(gtk4::Orientation::Vertical, 20);
+        timeline_box.set_margin_top(58);
+        timeline_box.set_margin_bottom(36);
         timeline_box.set_margin_start(14);
         timeline_box.set_margin_end(14);
 
@@ -602,8 +602,9 @@ impl GridCanvas {
 
     fn repack_rows(&self) {
         let recs = self.records.borrow();
-        let target_h = target_row_height(self.zoom_level.get());
-        let rows = pack_justified_rows(&recs, 0, self.viewport_width.get(), target_h, ROW_GAP);
+        let vw = self.viewport_width.get();
+        let target_h = target_row_height(self.zoom_level.get(), vw);
+        let rows = pack_justified_rows(&recs, 0, vw, target_h, ROW_GAP);
         let objects: Vec<RowObject> = rows.into_iter().map(RowObject::new).collect();
         let old_len = self.row_store.n_items();
         self.row_store.splice(0, old_len, &objects);
@@ -633,8 +634,8 @@ impl GridCanvas {
             }
         }
 
-        let target_h = target_row_height(self.zoom_level.get());
         let vw = self.viewport_width.get();
+        let target_h = target_row_height(self.zoom_level.get(), vw);
         let with_badges = self.show_channel_badges.get();
         let row_limit = self.timeline_row_limit.get();
         let mut rows_rendered = 0usize;
@@ -732,16 +733,20 @@ fn clamped_aspect(width: u32, height: u32) -> f64 {
     ((width as f64) / (height as f64)).clamp(0.48, 2.5)
 }
 
-fn target_row_height(level: i32) -> i32 {
-    match level {
-        1 => 104,
-        2 => 126,
-        3 => 152,
-        4 => 182,
-        5 => 218,
-        6 => 260,
-        _ => 310,
-    }
+fn target_row_height(level: i32, viewport_width: i32) -> i32 {
+    let base: f64 = match level {
+        1 => 108.0,
+        2 => 132.0,
+        3 => 158.0,
+        4 => 186.0,
+        5 => 218.0,
+        6 => 256.0,
+        _ => 300.0,
+    };
+    // Always auto-scale on wider windows so fullscreen shows 4-5 bold tiles per row
+    // instead of packing 7-8 tiny tiles across the width.
+    let scale = ((viewport_width as f64) / 760.0).clamp(0.95, 1.44);
+    (base * scale).round() as i32
 }
 
 fn pack_justified_rows(
@@ -878,5 +883,6 @@ mod tests {
             assert!(total_w <= 900, "row width {total_w} exceeded 900");
         }
         assert!(rows[0].tiles[1].width > rows[0].tiles[0].width * 2);
+        assert!(target_row_height(4, 1440) > target_row_height(4, 760));
     }
 }
