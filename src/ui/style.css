@@ -71,6 +71,192 @@ window.koma-window.background.theme-dusk {
     --k-glass-popover: rgba(24, 19, 19, 0.96);
 }
 
+/* Built-in Theme: Manga Paper (warm vintage beige-kraft paper & espresso brown ink) */
+window.koma-window.theme-paper,
+window.koma-window.background.theme-paper {
+    --k-bg: #ded1bc;
+    --k-fg: #261b14;
+    --k-accent: #3d281c;
+    --k-accent-text: #1f140e;
+    --k-accent-fg: #f5ece0;
+    --k-glass-shell: rgba(205, 189, 166, 0.90);
+    --k-glass-sidebar: rgba(220, 206, 184, 0.98);
+    --k-glass-island-alpha: rgba(232, 221, 202, 0.92);
+    --k-glass-inspector: rgba(220, 206, 184, 0.98);
+    --k-glass-topbar: rgba(214, 199, 175, 0.94);
+    --k-glass-popover: rgba(229, 217, 198, 0.98);
+
+    /* Override Libadwaita / gtk.css dark-mode variables so sidebar, inspector, and dialogs stay dark brown ink */
+    --window-bg-color: #ded1bc;
+    --window-fg-color: #261b14;
+    --view-bg-color: #e8ddca;
+    --view-fg-color: #261b14;
+    --sidebar-bg-color: #dcceb8;
+    --sidebar-fg-color: #261b14;
+    --headerbar-bg-color: #d6c7af;
+    --headerbar-fg-color: #261b14;
+    --popover-bg-color: #e5d9c6;
+    --popover-fg-color: #261b14;
+    --dialog-bg-color: #e5d9c6;
+    --dialog-fg-color: #261b14;
+    --card-bg-color: rgba(56, 38, 26, 0.08);
+    --card-fg-color: #261b14;
+    --accent-bg-color: #3d281c;
+    --accent-fg-color: #f5ece0;
+    --accent-color: #261b14;
+    color: #261b14;
+}
+
+window.koma-window.theme-paper .koma-sidebar,
+window.koma-window.theme-paper .koma-inspector,
+window.koma-window.theme-paper .koma-topbar,
+window.koma-window.theme-paper .koma-settings-pop,
+window.koma-window.theme-paper .koma-switcher,
+window.koma-window.theme-paper .koma-floating-dock,
+window.koma-window.theme-paper .koma-sidebar label,
+window.koma-window.theme-paper .koma-sidebar image,
+window.koma-window.theme-paper .koma-inspector label,
+window.koma-window.theme-paper .koma-inspector image,
+window.koma-window.theme-paper .koma-inspector entry {
+    color: #261b14;
+}
+
+window.koma-window.theme-paper .koma-section-label,
+window.koma-window.theme-paper .koma-tabular,
+window.koma-window.theme-paper .koma-status-inline,
+window.koma-window.theme-paper .koma-title-count,
+window.koma-window.theme-paper .koma-meta-key,
+window.koma-window.theme-paper .koma-channel-hash {
+    color: #4f3a2c;
+    opacity: 0.78;
+}
+
+window.koma-window.theme-paper .koma-meta-val,
+window.koma-window.theme-paper .koma-inspector-filename {
+    color: #261b14;
+    opacity: 0.95;
+}
+
+window.koma-window.theme-paper .koma-sidebar {
+    border-right-color: rgba(56, 38, 26, 0.22);
+}
+
+window.koma-window.theme-paper .koma-gallery-island,
+window.koma-window.theme-paper .koma-inspector,
+window.koma-window.theme-paper .koma-lightbox {
+    border-color: rgba(56, 38, 26, 0.24);
+}
+
+window.koma-window.theme-paper .koma-topbar,
+window.koma-window.theme-paper .koma-lightbox-bar {
+    border-bottom-color: rgba(56, 38, 26, 0.20);
+}
+
+window.koma-window.theme-paper .koma-sidebar-footer,
+window.koma-window.theme-paper .koma-filmstrip {
+    border-top-color: rgba(56, 38, 26, 0.20);
+}
+
+window.koma-window.theme-paper .koma-jump-btn,
+window.koma-window.theme-paper .koma-meta-card,
+window.koma-window.theme-paper .koma-action-btn,
+window.koma-window.theme-paper .koma-chip,
+window.koma-window.theme-paper .koma-theme-btn {
+    background-color: rgba(56, 38, 26, 0.08);
+    border-color: rgba(56, 38, 26, 0.18);
+    color: #261b14;
+}
+
+window.koma-window.theme-paper .koma-action-subtle {
+    border-color: rgba(56, 38, 26, 0.20);
+    color: #261b14;
+}
+
+window.koma-window.theme-paper .koma-accent-btn,
+window.koma-window.theme-paper .koma-accent-btn label {
+    background-color: #3d281c;
+    color: #f5ece0;
+}
+
+window.koma-window.theme-paper .koma-sidebar-list > row:hover,
+window.koma-window.theme-paper .koma-home-btn:hover {
+    background-color: rgba(56, 38, 26, 0.09);
+}
+
+window.koma-window.theme-paper .koma-sidebar-list > row:selected,
+window.koma-window.theme-paper .koma-sidebar-list > row:selected:hover,
+window.koma-window.theme-paper .koma-home-active,
+window.koma-window.theme-paper .koma-home-active:hover,
+window.koma-window.theme-paper .koma-theme-btn:checked,
+window.koma-window.theme-paper .koma-ghost-text:checked,
+window.koma-window.theme-paper .koma-ghost-btn:checked {
+    background-color: rgba(138, 91, 68, 0.24);
+    border-color: rgba(92, 58, 38, 0.38);
+    color: #1f140e;
+}
+
+window.koma-window.theme-paper .koma-sidebar-list > row:selected label,
+window.koma-window.theme-paper .koma-home-active label,
+window.koma-window.theme-paper .koma-home-active image {
+    color: #1f140e;
+    opacity: 1;
+}
+
+window.koma-window.theme-paper .koma-tile-frame {
+    background-color: #cbbba2;
+}
+
+window.koma-window.theme-paper .koma-tile-frame:hover {
+    box-shadow: inset 0 0 0 1px rgba(56, 38, 26, 0.55);
+}
+
+window.koma-window.theme-paper .koma-tile-selected .koma-tile-frame {
+    box-shadow: inset 0 0 0 2.5px #3d281c;
+}
+
+window.koma-window.theme-paper .koma-tile-ch-tag {
+    background-color: rgba(38, 27, 20, 0.86);
+    color: #f5ece0;
+    border-color: rgba(245, 236, 224, 0.18);
+}
+
+window.koma-window.theme-paper .koma-inspector-preview,
+window.koma-window.theme-paper .koma-switcher-thumb {
+    background-color: #cbbba2;
+}
+
+window.koma-window.theme-paper .koma-floating-dock,
+window.koma-window.theme-paper .koma-settings-pop > contents {
+    box-shadow: 0 10px 28px rgba(38, 27, 20, 0.20);
+    border-color: rgba(56, 38, 26, 0.26);
+}
+
+window.koma-window.theme-paper .koma-lightbox {
+    background-color: rgba(220, 206, 184, 0.96);
+}
+
+window.koma-window.theme-paper .koma-lightbox-nav {
+    background-color: rgba(232, 221, 202, 0.90);
+    border-color: rgba(56, 38, 26, 0.28);
+    color: #261b14;
+}
+
+window.koma-window.theme-paper .koma-lightbox-nav:hover {
+    background-color: #e8ddca;
+}
+
+window.koma-window.theme-paper .koma-sync-dot.sync-ok {
+    background-color: #1f7a4c;
+}
+
+window.koma-window.theme-paper .koma-sync-dot.sync-busy {
+    background-color: #b4690e;
+}
+
+window.koma-window.theme-paper .koma-sync-dot.sync-offline {
+    background-color: #b82d2d;
+}
+
 /* Ensure OverlaySplitView does not paint an opaque solid layer over our glass shell */
 window.koma-window overlay-split-view,
 window.koma-window overlay-split-view > * {

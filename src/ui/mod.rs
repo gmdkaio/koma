@@ -778,12 +778,15 @@ pub fn build_ui(app: &adw::Application) {
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(include_str!("style.css"));
     let theme_monitor = if let Some(display) = gdk::Display::default() {
+        let monitor = watch_user_gtk_css(&display);
+        // Load koma's stylesheet above USER priority so built-in light/dark themes
+        // override dark-only variables from ~/.config/gtk-4.0/gtk.css cleanly.
         gtk4::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            gtk4::STYLE_PROVIDER_PRIORITY_USER + 1,
         );
-        watch_user_gtk_css(&display)
+        monitor
     } else {
         None
     };
@@ -1654,6 +1657,7 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
     ("inir", "iNiR Glass"),
     ("monochrome", "Monochrome"),
     ("dusk", "Warm Dusk"),
+    ("paper", "Manga Paper"),
 ];
 
 fn apply_theme_class(window: &adw::ApplicationWindow, theme_id: &str) {
@@ -1665,6 +1669,12 @@ fn apply_theme_class(window: &adw::ApplicationWindow, theme_id: &str) {
     if theme_id != "inir" && BUILTIN_THEMES.iter().any(|&(id, _)| id == theme_id) {
         window.add_css_class(&format!("theme-{theme_id}"));
     }
+    let scheme = match theme_id {
+        "paper" => adw::ColorScheme::ForceLight,
+        "inir" => adw::ColorScheme::Default,
+        _ => adw::ColorScheme::ForceDark,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
 }
 
 fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
@@ -1714,7 +1724,12 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
                 let _ = ctx_t.store.borrow().set_setting("theme", id);
             }
         });
-        theme_grid.attach(&btn, (idx % 2) as i32, (idx / 2) as i32, 1, 1);
+        let span = if idx + 1 == BUILTIN_THEMES.len() && BUILTIN_THEMES.len() % 2 == 1 {
+            2
+        } else {
+            1
+        };
+        theme_grid.attach(&btn, (idx % 2) as i32, (idx / 2) as i32, span, 1);
     }
     root.append(&theme_grid);
 
