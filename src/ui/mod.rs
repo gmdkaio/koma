@@ -477,8 +477,7 @@ impl AppCtx {
         if !self.inspector_split.is_collapsed()
             && let Some(canvas) = self.grid_canvas.borrow().clone()
         {
-            let delta = if show { -276 } else { 276 };
-            canvas.notify_sidebar_animating(delta);
+            canvas.notify_sidebar_animating(if show { -276 } else { 276 });
         }
         self.inspector_split.set_show_sidebar(show);
     }
@@ -1328,8 +1327,9 @@ pub fn build_ui(app: &adw::Application) {
         .sidebar_position(gtk4::PackType::End)
         .pin_sidebar(true)
         .show_sidebar(false)
-        .min_sidebar_width(262.0)
-        .max_sidebar_width(288.0)
+        .min_sidebar_width(276.0)
+        .max_sidebar_width(276.0)
+        .sidebar_width_fraction(0.0)
         .hexpand(true)
         .vexpand(true)
         .content(&content_stack)

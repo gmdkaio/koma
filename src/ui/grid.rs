@@ -114,6 +114,7 @@ pub struct GridCanvas {
     pending_resize: Rc<RefCell<Option<glib::SourceId>>>,
     /// Suppresses intermediate resize ticks while OverlaySplitView plays its spring animation.
     resize_freeze_until: Rc<Cell<Option<Instant>>>,
+    sidebar_anim_gen: Rc<Cell<u64>>,
     panel_anim_gen: Rc<Cell<u64>>,
     select_mode: Rc<Cell<bool>>,
     show_channel_badges: Rc<Cell<bool>>,
@@ -145,6 +146,7 @@ impl GridCanvas {
         let viewport_initialized = Rc::new(Cell::new(false));
         let pending_resize: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let resize_freeze_until = Rc::new(Cell::new(None));
+        let sidebar_anim_gen = Rc::new(Cell::new(0));
         let panel_anim_gen = Rc::new(Cell::new(0));
         let select_mode = Rc::new(Cell::new(false));
         let show_channel_badges = Rc::new(Cell::new(false));
@@ -241,6 +243,7 @@ impl GridCanvas {
             viewport_initialized,
             pending_resize,
             resize_freeze_until,
+            sidebar_anim_gen,
             panel_anim_gen,
             select_mode,
             show_channel_badges,
@@ -269,6 +272,7 @@ impl GridCanvas {
                 &row_obj.item(),
                 c_bind.show_channel_badges.get(),
                 false,
+                None,
             );
         });
 
@@ -318,26 +322,50 @@ impl GridCanvas {
         }
     }
 
-    /// Called right when a sidebar (Inspector or left sidebar) begins sliding so the spring
-    /// animation runs at full 60/120fps with zero mid-animation repacks, then settles cleanly once.
+    /// Coordinates grid repack with OverlaySplitView's spring animation:
+    /// - Closing (`delta_px > 0`): widens immediately so the departing sidebar uncovers the
+    ///   full-width grid seamlessly with zero delay.
+    /// - Opening (`delta_px < 0`): repacks once at 160ms (when the sliding sidebar already
+    ///   covers the right edge, preventing a black gap flash and eliminating post-slide lag).
     pub fn notify_sidebar_animating(self: &Rc<Self>, delta_px: i32) {
         if let Some(prev) = self.pending_resize.borrow_mut().take() {
             prev.remove();
         }
-        // When opening Inspector (shrinking gallery), pre-pack once to final width immediately
-        // so the sidebar slides cleanly into empty space at 120fps.
-        if delta_px < 0 && self.viewport_initialized.get() {
-            let target_usable = (self.current_raw_width() + delta_px - CANVAS_PAD_X).max(260);
-            self.viewport_width.set(target_usable);
-            if !self.records.borrow().is_empty() {
+        let anim_gen = self.sidebar_anim_gen.get().wrapping_add(1);
+        self.sidebar_anim_gen.set(anim_gen);
+        let target_usable = (self.current_raw_width() + delta_px - CANVAS_PAD_X).max(260);
+        self.resize_freeze_until
+            .set(Some(Instant::now() + Duration::from_millis(340)));
+
+        if self.viewport_initialized.get() && !self.records.borrow().is_empty() {
+            if delta_px > 0 {
+                // Closing sidebar: widen immediately behind the sliding panel.
+                self.viewport_width.set(target_usable);
                 let c = self.clone();
-                glib::idle_add_local_once(move || c.repack_rows_in_place(true));
+                glib::idle_add_local_once(move || {
+                    if c.sidebar_anim_gen.get() == anim_gen {
+                        c.repack_rows_in_place(true);
+                    }
+                });
+            } else if delta_px < 0 {
+                // Opening sidebar: repack right as the panel lands (~160ms) so there is neither
+                // an early gap flash nor a late post-animation snap.
+                let c_mid = self.clone();
+                glib::timeout_add_local_once(Duration::from_millis(160), move || {
+                    if c_mid.sidebar_anim_gen.get() == anim_gen
+                        && (c_mid.viewport_width.get() - target_usable).abs() >= 4
+                    {
+                        c_mid.viewport_width.set(target_usable);
+                        if !c_mid.records.borrow().is_empty() {
+                            c_mid.repack_rows_in_place(true);
+                        }
+                    }
+                });
             }
         }
-        self.resize_freeze_until
-            .set(Some(Instant::now() + Duration::from_millis(420)));
+
         let c = self.clone();
-        let src = glib::timeout_add_local_once(Duration::from_millis(430), move || {
+        let src = glib::timeout_add_local_once(Duration::from_millis(350), move || {
             *c.pending_resize.borrow_mut() = None;
             c.resize_freeze_until.set(None);
             let final_usable = (c.current_raw_width() - CANVAS_PAD_X).max(260);
@@ -357,6 +385,7 @@ impl GridCanvas {
         item: &ListRowItem,
         with_channel_badge: bool,
         allow_reuse: bool,
+        preserved_textures: Option<&HashMap<i64, gdk::Paintable>>,
     ) {
         match item {
             ListRowItem::Header {
@@ -433,6 +462,7 @@ impl GridCanvas {
                         continue;
                     };
                     let is_sel = selected_snapshot.contains(&rec.id);
+                    let preserved = preserved_textures.and_then(|m| m.get(&rec.id));
                     let card = self.build_tile_card(
                         rec,
                         tile.width,
@@ -440,6 +470,7 @@ impl GridCanvas {
                         is_sel,
                         show_checks,
                         with_channel_badge,
+                        preserved,
                     );
                     row_box.append(&card);
                 }
@@ -447,6 +478,7 @@ impl GridCanvas {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_tile_card(
         self: &Rc<Self>,
         rec: &ImageRecord,
@@ -455,6 +487,7 @@ impl GridCanvas {
         is_sel: bool,
         show_check: bool,
         with_channel_badge: bool,
+        preserved: Option<&gdk::Paintable>,
     ) -> gtk4::Box {
         let card = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         card.set_halign(gtk4::Align::Start);
@@ -468,8 +501,12 @@ impl GridCanvas {
         picture.set_can_shrink(true);
         picture.set_hexpand(true);
         picture.set_vexpand(true);
-        let thumb_abs = self.root.join(&rec.thumb_path);
-        self.loader.bind_picture(&picture, &thumb_abs);
+        if let Some(paintable) = preserved {
+            picture.set_paintable(Some(paintable));
+        } else {
+            let thumb_abs = self.root.join(&rec.thumb_path);
+            self.loader.bind_picture(&picture, &thumb_abs);
+        }
 
         // Scales slightly inward on selection (Apple Photos / Eagle style) inside the accent matte
         // so selection is crisp on pure-white manga panels and dark scenes alike, with zero shadow.
@@ -489,11 +526,18 @@ impl GridCanvas {
             .css_classes(["koma-check-badge"])
             .build();
 
+        let sel_frame = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        sel_frame.add_css_class("koma-tile-select-frame");
+        sel_frame.set_can_target(false);
+        sel_frame.set_hexpand(true);
+        sel_frame.set_vexpand(true);
+
         let overlay = gtk4::Overlay::new();
         overlay.set_size_request(tile_w, tile_h);
         overlay.set_overflow(gtk4::Overflow::Hidden);
         overlay.add_css_class("koma-tile-frame");
         overlay.set_child(Some(&pic_wrap));
+        overlay.add_overlay(&sel_frame);
         overlay.add_overlay(&check);
 
         if with_channel_badge {
@@ -826,7 +870,7 @@ impl GridCanvas {
             prev.remove();
         }
         let c = self.clone();
-        let src = glib::timeout_add_local_once(Duration::from_millis(65), move || {
+        let src = glib::timeout_add_local_once(Duration::from_millis(40), move || {
             *c.pending_resize.borrow_mut() = None;
             let settled = (c.current_raw_width() - CANVAS_PAD_X).max(260);
             if (c.viewport_width.get() - settled).abs() < 4 {
@@ -1044,13 +1088,41 @@ impl GridCanvas {
             list.retain(|w| w.upgrade().is_some());
             list.iter().filter_map(|w| w.upgrade()).collect()
         };
+        // Harvest already-loaded textures from live rows before rebuilding so repacks
+        // (Inspector open/close, window resize, zoom) paint immediately with zero blank flashes.
+        let mut preserved_textures: HashMap<i64, gdk::Paintable> = HashMap::new();
+        for list_item in &live {
+            if let Some(row_box) = list_item.child().and_downcast::<gtk4::Box>()
+                && row_box.widget_name() == "koma-imgs"
+            {
+                let mut child = row_box.first_child();
+                while let Some(card) = child {
+                    if let Ok(id) = card.widget_name().parse::<i64>()
+                        && let Some(overlay) = card.first_child().and_downcast::<gtk4::Overlay>()
+                        && let Some(pic_wrap) = overlay.child().and_downcast::<gtk4::Box>()
+                        && let Some(pic) = pic_wrap.first_child().and_downcast::<gtk4::Picture>()
+                        && let Some(p) = pic.paintable()
+                    {
+                        preserved_textures.insert(id, p);
+                    }
+                    child = card.next_sibling();
+                }
+            }
+        }
+        let preserved_ref = (!preserved_textures.is_empty()).then_some(&preserved_textures);
         // Update EVERY bound ListItem (both mapped on-screen and off-screen pre-buffered rows),
         // otherwise GtkListView scrolls stale narrow/old rows into view without re-calling bind.
         for list_item in live {
             if let Some(row_obj) = list_item.item().and_downcast::<RowObject>()
                 && let Some(row_box) = list_item.child().and_downcast::<gtk4::Box>()
             {
-                self.populate_row_item(&row_box, &row_obj.item(), with_badges, allow_reuse);
+                self.populate_row_item(
+                    &row_box,
+                    &row_obj.item(),
+                    with_badges,
+                    allow_reuse,
+                    preserved_ref,
+                );
                 row_box.queue_resize();
             }
         }

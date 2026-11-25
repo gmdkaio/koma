@@ -12,7 +12,7 @@ use gtk4::{gdk, gio, glib};
 
 use crate::media;
 
-const THUMB_CACHE_LIMIT: usize = 260;
+const THUMB_CACHE_LIMIT: usize = 520;
 const WORKER_THREADS: usize = 3;
 
 pub struct ThumbCache {

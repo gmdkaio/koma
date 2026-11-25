@@ -207,12 +207,9 @@ window.koma-window.theme-paper .koma-tile-frame {
     background-color: #cbbba2;
 }
 
-window.koma-window.theme-paper .koma-tile-selected .koma-tile-frame {
-    background-color: #3d281c;
-}
-
-window.koma-window.theme-paper .koma-tile-selected .koma-tile-media {
-    outline-color: #e8ddca;
+window.koma-window.theme-paper .koma-tile-select-frame {
+    border: 4px solid #3d281c;
+    box-shadow: inset 0 0 0 1.5px #e8ddca;
 }
 
 window.koma-window.theme-paper .koma-tile-ch-tag {
@@ -612,23 +609,39 @@ window.koma-window overlay-split-view > * {
 .koma-tile-frame {
     background-color: color-mix(in srgb, var(--k-bg) 60%, black 40%);
     border-radius: 0px;
+    border: none;
+    padding: 0px;
     box-shadow: none;
-    transition: background-color 130ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.koma-tile-selected .koma-tile-frame {
-    background-color: var(--k-accent);
+/* Uniform 4px GPU-only selection bezel (zero layout/padding animation -> native 120fps) */
+.koma-tile-select-frame {
+    border: 4px solid color-mix(in srgb, var(--k-bg) 74%, var(--k-accent) 26%);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--k-accent) 38%, transparent);
+    opacity: 0;
+    transform: scale(1.03);
+    transition: opacity 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.koma-tile-media {
+.koma-tile-selected .koma-tile-select-frame {
+    opacity: 1;
     transform: scale(1);
-    outline: 1.5px solid transparent;
-    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1), outline-color 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.koma-tile-selected .koma-tile-media {
-    transform: scale(0.95);
-    outline-color: var(--k-bg);
+window.koma-window.theme-obsidian .koma-tile-select-frame {
+    border: 4px solid #161920;
+    box-shadow: inset 0 0 0 1px rgba(210, 218, 232, 0.26);
+}
+
+window.koma-window.theme-monochrome .koma-tile-select-frame {
+    border: 4px solid #1a1d24;
+    box-shadow: inset 0 0 0 1px rgba(235, 238, 244, 0.30);
+}
+
+window.koma-window.theme-dusk .koma-tile-select-frame {
+    border: 4px solid #241c1b;
+    box-shadow: inset 0 0 0 1px rgba(230, 194, 165, 0.36);
 }
 
 .koma-tile-caption {
