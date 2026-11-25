@@ -1943,16 +1943,24 @@ pub fn build_ui(app: &adw::Application) {
             }
         }
         if key == gdk::Key::Escape {
-            if c.select_mode.get() || c.selected_images.borrow().len() > 1 {
+            let sel_len = c.selected_images.borrow().len();
+            if c.select_mode.get() || sel_len > 1 {
                 c.select_mode.set(false);
                 c.select_toggle.set_active(false);
-                if let Some(canvas) = c.grid_canvas.borrow().as_ref() {
+                let canvas = c.grid_canvas.borrow().clone();
+                if let Some(canvas) = canvas {
                     canvas.clear_selection();
                 }
                 c.update_batch_bar();
                 return glib::Propagation::Stop;
             } else if c.inspector_split.shows_sidebar() {
                 c.set_inspector_visible(false);
+                return glib::Propagation::Stop;
+            } else if sel_len > 0 {
+                let canvas = c.grid_canvas.borrow().clone();
+                if let Some(canvas) = canvas {
+                    canvas.clear_selection();
+                }
                 return glib::Propagation::Stop;
             }
         }
