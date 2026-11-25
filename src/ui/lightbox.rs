@@ -1,34 +1,49 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 
 use crate::store::ImageRecord;
-use crate::ui::media_util::{ThumbCache, load_texture, short_format};
+use crate::ui::media_util::{ThumbCache, decode_full_rgba, short_format};
+
+thread_local! {
+    static LIGHTBOX_PIC: RefCell<Option<glib::WeakRef<gtk4::Picture>>> = const { RefCell::new(None) };
+}
 
 pub struct LightboxView {
     pub root_widget: gtk4::Box,
     title_label: gtk4::Label,
     meta_pill: gtk4::Label,
     zoom_btn: gtk4::Button,
+    inspector_toggle: gtk4::ToggleButton,
+    suppress_inspector_toggle: Rc<Cell<bool>>,
     picture: gtk4::Picture,
     filmstrip_box: gtk4::Box,
     records: Rc<RefCell<Vec<ImageRecord>>>,
     index: Rc<Cell<usize>>,
     zoom_100: Rc<Cell<bool>>,
+    load_gen: Arc<AtomicU64>,
     root_dir: PathBuf,
     thumb_cache: Rc<RefCell<ThumbCache>>,
+    on_current_changed: Rc<RefCell<Box<dyn Fn(Option<ImageRecord>)>>>,
 }
 
 impl LightboxView {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         root_dir: PathBuf,
         thumb_cache: Rc<RefCell<ThumbCache>>,
         on_close: impl Fn() + 'static,
         on_copy: impl Fn(ImageRecord) + 'static,
         on_move: impl Fn(ImageRecord) + 'static,
+        on_delete: impl Fn(ImageRecord) + 'static,
+        on_toggle_inspector: impl Fn(bool) + 'static,
+        on_current_changed: impl Fn(Option<ImageRecord>) + 'static,
     ) -> Rc<Self> {
         let root_widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         root_widget.add_css_class("koma-lightbox");
@@ -64,10 +79,21 @@ impl LightboxView {
             .css_classes(["flat", "koma-ghost-btn"])
             .tooltip_text("Move Channel")
             .build();
+        let delete_btn = gtk4::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .css_classes(["flat", "koma-ghost-btn", "destructive-action"])
+            .tooltip_text("Delete Image (Del)")
+            .build();
         let zoom_btn = gtk4::Button::builder()
             .label("Fit")
             .css_classes(["flat", "koma-ghost-text"])
             .tooltip_text("Toggle Fit / 100% (Z)")
+            .build();
+        let inspector_toggle = gtk4::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Toggle Inspector")
+            .active(false)
+            .css_classes(["flat", "koma-ghost-btn"])
             .build();
 
         topbar.append(&back_btn);
@@ -75,7 +101,9 @@ impl LightboxView {
         topbar.append(&meta_pill);
         topbar.append(&copy_btn);
         topbar.append(&move_btn);
+        topbar.append(&delete_btn);
         topbar.append(&zoom_btn);
+        topbar.append(&inspector_toggle);
         root_widget.append(&topbar);
 
         let picture = gtk4::Picture::new();
@@ -123,18 +151,23 @@ impl LightboxView {
             .build();
         root_widget.append(&filmstrip_scroll);
 
+        let suppress_inspector_toggle = Rc::new(Cell::new(false));
         let view = Rc::new(Self {
             root_widget,
             title_label,
             meta_pill,
             zoom_btn,
+            inspector_toggle: inspector_toggle.clone(),
+            suppress_inspector_toggle: suppress_inspector_toggle.clone(),
             picture,
             filmstrip_box,
             records: Rc::new(RefCell::new(Vec::new())),
             index: Rc::new(Cell::new(0)),
             zoom_100: Rc::new(Cell::new(false)),
+            load_gen: Arc::new(AtomicU64::new(0)),
             root_dir,
             thumb_cache,
+            on_current_changed: Rc::new(RefCell::new(Box::new(on_current_changed))),
         });
 
         let on_close = Rc::new(on_close);
@@ -148,6 +181,13 @@ impl LightboxView {
 
         let v_zoom = view.clone();
         view.zoom_btn.connect_clicked(move |_| v_zoom.toggle_zoom());
+
+        let sup = suppress_inspector_toggle;
+        inspector_toggle.connect_toggled(move |btn| {
+            if !sup.get() {
+                on_toggle_inspector(btn.is_active());
+            }
+        });
 
         let v_copy = view.clone();
         let on_copy = Rc::new(on_copy);
@@ -165,10 +205,20 @@ impl LightboxView {
             }
         });
 
+        let on_delete = Rc::new(on_delete);
+        let v_del = view.clone();
+        let del_cb = on_delete.clone();
+        delete_btn.connect_clicked(move |_| {
+            if let Some(rec) = v_del.current_record() {
+                del_cb(rec);
+            }
+        });
+
         let key_ctrl = gtk4::EventControllerKey::new();
         let v_key = view.clone();
         let close_key = on_close.clone();
         let copy_key = on_copy.clone();
+        let del_key = on_delete;
         key_ctrl.connect_key_pressed(move |_, key, _, mods| match key {
             gdk::Key::Escape => {
                 close_key();
@@ -186,6 +236,12 @@ impl LightboxView {
                 v_key.toggle_zoom();
                 glib::Propagation::Stop
             }
+            gdk::Key::Delete => {
+                if let Some(rec) = v_key.current_record() {
+                    del_key(rec);
+                }
+                glib::Propagation::Stop
+            }
             gdk::Key::c | gdk::Key::C if mods.contains(gdk::ModifierType::CONTROL_MASK) => {
                 if let Some(rec) = v_key.current_record() {
                     copy_key(rec);
@@ -197,6 +253,30 @@ impl LightboxView {
         view.root_widget.add_controller(key_ctrl);
 
         view
+    }
+
+    pub fn set_inspector_active(&self, active: bool) {
+        self.suppress_inspector_toggle.set(true);
+        if self.inspector_toggle.is_active() != active {
+            self.inspector_toggle.set_active(active);
+        }
+        self.suppress_inspector_toggle.set(false);
+    }
+
+    pub fn sync_records(self: &Rc<Self>, records: Vec<ImageRecord>, preferred_id: Option<i64>) -> bool {
+        if records.is_empty() {
+            *self.records.borrow_mut() = Vec::new();
+            (self.on_current_changed.borrow())(None);
+            return false;
+        }
+        let next_idx = preferred_id
+            .and_then(|id| records.iter().position(|r| r.id == id))
+            .unwrap_or_else(|| self.index.get().min(records.len() - 1));
+        *self.records.borrow_mut() = records;
+        self.index.set(next_idx);
+        self.zoom_100.set(false);
+        self.render_current();
+        true
     }
 
     pub fn open(self: &Rc<Self>, records: Vec<ImageRecord>, index: usize) {
@@ -252,29 +332,67 @@ impl LightboxView {
 
     fn render_current(self: &Rc<Self>) {
         let Some(rec) = self.current_record() else {
+            (self.on_current_changed.borrow())(None);
             return;
         };
 
+        (self.on_current_changed.borrow())(Some(rec.clone()));
         self.title_label
             .set_label(&format!("# {} / {}", rec.channel_slug, rec.filename));
         self.meta_pill.set_label(&format!(
-            "{} × {} · {} · Local",
+            "{} × {} · {}",
             rec.width,
             rec.height,
             short_format(&rec.mime_type)
         ));
 
-        let full_abs = self.root_dir.join(&rec.rel_path);
-        let tex = load_texture(&full_abs);
-        self.picture.set_paintable(tex.as_ref());
+        // Paint cached thumbnail immediately so stepping feels instant, then swap in full-res async.
+        let thumb_abs = self.root_dir.join(&rec.thumb_path);
+        let placeholder = self.thumb_cache.borrow_mut().get_or_load(&thumb_abs);
+        self.picture.set_paintable(placeholder.as_ref());
         self.apply_zoom();
+
+        let load_id = self.load_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        let gen_counter = self.load_gen.clone();
+        let full_abs = self.root_dir.join(&rec.rel_path);
+        LIGHTBOX_PIC.with(|slot| *slot.borrow_mut() = Some(self.picture.downgrade()));
+        thread::spawn(move || {
+            if gen_counter.load(Ordering::Relaxed) != load_id {
+                return;
+            }
+            let decoded = decode_full_rgba(&full_abs);
+            if gen_counter.load(Ordering::Relaxed) != load_id {
+                return;
+            }
+            glib::MainContext::default().invoke(move || {
+                if gen_counter.load(Ordering::Relaxed) != load_id {
+                    return;
+                }
+                let Some((w, h, rgba)) = decoded else { return };
+                LIGHTBOX_PIC.with(|slot| {
+                    if let Some(pic) = slot.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        let stride = (w as usize) * 4;
+                        let bytes = glib::Bytes::from_owned(rgba);
+                        let tex: gdk::Texture = gdk::MemoryTexture::new(
+                            w,
+                            h,
+                            gdk::MemoryFormat::R8g8b8a8,
+                            &bytes,
+                            stride,
+                        )
+                        .into();
+                        pic.set_paintable(Some(&tex));
+                    }
+                });
+            });
+        });
 
         // Render a bounded window of up to 21 filmstrip thumbnails around the active index.
         while let Some(child) = self.filmstrip_box.first_child() {
             self.filmstrip_box.remove(&child);
         }
 
-        let recs = self.records.borrow();
+        let recs = self.records.borrow().clone();
         let active = self.index.get();
         let start = active.saturating_sub(10);
         let end = (active + 11).min(recs.len());

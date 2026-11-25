@@ -112,6 +112,7 @@ window.koma-window.theme-paper .koma-inspector,
 window.koma-window.theme-paper .koma-topbar,
 window.koma-window.theme-paper .koma-settings-pop,
 window.koma-window.theme-paper .koma-switcher,
+window.koma-window.theme-paper .koma-dialog,
 window.koma-window.theme-paper .koma-floating-dock,
 window.koma-window.theme-paper .koma-sidebar label,
 window.koma-window.theme-paper .koma-sidebar image,
@@ -206,12 +207,12 @@ window.koma-window.theme-paper .koma-tile-frame {
     background-color: #cbbba2;
 }
 
-window.koma-window.theme-paper .koma-tile-frame:hover {
-    box-shadow: inset 0 0 0 1px rgba(56, 38, 26, 0.55);
+window.koma-window.theme-paper .koma-tile-selected .koma-tile-frame {
+    background-color: #3d281c;
 }
 
-window.koma-window.theme-paper .koma-tile-selected .koma-tile-frame {
-    box-shadow: inset 0 0 0 2.5px #3d281c;
+window.koma-window.theme-paper .koma-tile-selected .koma-tile-media {
+    outline-color: #e8ddca;
 }
 
 window.koma-window.theme-paper .koma-tile-ch-tag {
@@ -377,7 +378,13 @@ window.koma-window overlay-split-view > * {
     padding: 0;
     font-size: 13px;
     min-height: 0;
-    transition: background-color 90ms ease;
+    border-top: 2px solid transparent;
+    transition: background-color 110ms ease-out, border-color 100ms ease-out;
+}
+
+.koma-sidebar-list > row.koma-row-drop-target {
+    border-top-color: var(--k-accent);
+    background-color: color-mix(in srgb, var(--k-accent) 12%, transparent);
 }
 
 .koma-sidebar-list > row:hover {
@@ -428,7 +435,7 @@ window.koma-window overlay-split-view > * {
 .koma-inspector {
     background-color: var(--k-glass-inspector);
     border-radius: 10px;
-    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 9%, transparent);
     margin: 8px 8px 8px 0;
     padding: 13px 14px;
 }
@@ -574,6 +581,16 @@ window.koma-window overlay-split-view > * {
     /* Top padding clears the floating sticky glass header while images scroll under it */
     padding: 54px 14px 36px 14px;
     outline: none;
+    opacity: 1;
+    transform: translateY(0px);
+    transition: opacity 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.koma-gallery-list.koma-panel-enter {
+    opacity: 0.18;
+    transform: translateY(10px);
+    transition: none;
 }
 
 .koma-gallery-list:focus,
@@ -596,27 +613,22 @@ window.koma-window overlay-split-view > * {
     background-color: color-mix(in srgb, var(--k-bg) 60%, black 40%);
     border-radius: 0px;
     box-shadow: none;
-    transition: box-shadow 100ms ease;
-}
-
-.koma-tile-frame:hover {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent);
+    transition: background-color 130ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .koma-tile-selected .koma-tile-frame {
-    box-shadow: inset 0 0 0 2px var(--k-accent);
+    background-color: var(--k-accent);
 }
 
-.koma-tile-scrim {
-    background-image: linear-gradient(to top, rgba(6, 8, 12, 0.82), rgba(6, 8, 12, 0.36) 60%, transparent);
-    padding: 16px 8px 6px 8px;
-    opacity: 0;
-    transition: opacity 110ms ease;
+.koma-tile-media {
+    transform: scale(1);
+    outline: 1.5px solid transparent;
+    transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1), outline-color 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.koma-tile-frame:hover .koma-tile-scrim,
-.koma-tile-selected .koma-tile-scrim {
-    opacity: 1;
+.koma-tile-selected .koma-tile-media {
+    transform: scale(0.95);
+    outline-color: var(--k-bg);
 }
 
 .koma-tile-caption {
@@ -736,6 +748,7 @@ window.koma-window overlay-split-view > * {
     min-height: 0;
     font-size: 12px;
     font-weight: 600;
+    transition: background-color 110ms ease-out, border-color 110ms ease-out;
 }
 
 .koma-action-btn:hover {
@@ -752,6 +765,7 @@ window.koma-window overlay-split-view > * {
     font-size: 12px;
     font-weight: 500;
     opacity: 0.78;
+    transition: background-color 110ms ease-out, opacity 110ms ease-out;
 }
 
 .koma-action-subtle:hover {
@@ -785,14 +799,111 @@ window.koma-window overlay-split-view > * {
     opacity: 1;
 }
 
-/* === THEME & SETTINGS POPOVER === */
+/* === THEME & SETTINGS POPOVER + ALL MENUS & INLINE EDITING === */
 
+window.koma-window popover > contents,
 .koma-settings-pop > contents {
     background-color: var(--k-glass-popover);
-    border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    color: var(--k-fg);
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
     border-radius: 8px;
     padding: 12px 14px;
-    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48);
+}
+
+.koma-menu-pop > contents {
+    padding: 6px;
+}
+
+.koma-menu-item {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    outline: none;
+    border-radius: 5px;
+    padding: 6px 10px;
+    min-height: 0;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--k-fg);
+    transition: background-color 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.koma-menu-item:focus,
+.koma-menu-item:focus-visible {
+    outline: none;
+    box-shadow: none;
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.koma-menu-item:hover {
+    background-color: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.koma-menu-item.destructive-action {
+    color: #f87171;
+}
+
+window.koma-window.theme-paper .koma-menu-item.destructive-action {
+    color: #b82d2d;
+}
+
+.koma-inline-entry {
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    color: var(--k-fg);
+    border: 1px solid color-mix(in srgb, var(--k-accent) 45%, transparent);
+    border-radius: 5px;
+    box-shadow: none;
+    outline: none;
+    padding: 2px 7px;
+    min-height: 24px;
+    font-size: 12.5px;
+}
+
+.koma-inline-entry:focus-within {
+    border-color: var(--k-accent);
+    box-shadow: none;
+    outline: none;
+}
+
+.koma-dialog {
+    background-color: var(--k-glass-popover);
+    color: var(--k-fg);
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+    padding: 18px 20px;
+}
+
+.koma-dialog-body {
+    font-size: 13px;
+    opacity: 0.78;
+}
+
+.koma-danger-btn {
+    background-color: rgba(239, 68, 68, 0.20);
+    border: 1px solid rgba(239, 68, 68, 0.44);
+    color: #fca5a5;
+    border-radius: 5px;
+    padding: 6px 14px;
+    min-height: 0;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: none;
+    transition: background-color 110ms ease-out;
+}
+
+.koma-danger-btn:hover {
+    background-color: rgba(239, 68, 68, 0.34);
+}
+
+window.koma-window.theme-paper .koma-danger-btn {
+    background-color: rgba(184, 45, 45, 0.14);
+    border-color: rgba(184, 45, 45, 0.42);
+    color: #9b1c1c;
+}
+
+window.koma-window.theme-paper .koma-danger-btn:hover {
+    background-color: rgba(184, 45, 45, 0.24);
 }
 
 .koma-theme-btn {

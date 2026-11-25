@@ -1,7 +1,8 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gtk4::glib::subclass::prelude::*;
 use gtk4::prelude::*;
@@ -13,12 +14,21 @@ use crate::ui::media_util::AsyncThumbLoader;
 const ROW_GAP: i32 = 6;
 /// Horizontal margin (14px * 2) + vertical scrollbar clearance (14px).
 const CANVAS_PAD_X: i32 = 42;
-const INITIAL_TIMELINE_ROWS: usize = 36;
+const WHEEL_STEP_PX: f64 = 148.0;
+const TOP_LIST_PAD: f64 = 54.0;
+const HEADER_ROW_HEIGHT: f64 = 38.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NavDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct RowTile {
     index: usize,
-    record: ImageRecord,
     width: i32,
 }
 
@@ -28,12 +38,22 @@ struct JustifiedRow {
     tiles: Vec<RowTile>,
 }
 
+#[derive(Clone, Debug)]
+enum ListRowItem {
+    Header {
+        label: String,
+        count: usize,
+        first: bool,
+    },
+    Images(JustifiedRow),
+}
+
 mod imp {
     use super::*;
 
     #[derive(Default)]
     pub struct RowObject {
-        pub(super) row: RefCell<Option<JustifiedRow>>,
+        pub(super) item: RefCell<Option<ListRowItem>>,
     }
 
     #[glib::object_subclass]
@@ -50,19 +70,29 @@ glib::wrapper! {
 }
 
 impl RowObject {
-    fn new(row: JustifiedRow) -> Self {
+    fn new(item: ListRowItem) -> Self {
         let obj: Self = glib::Object::new();
-        obj.imp().row.replace(Some(row));
+        obj.imp().item.replace(Some(item));
         obj
     }
 
-    fn row(&self) -> JustifiedRow {
+    fn set_item(&self, item: ListRowItem) {
+        self.imp().item.replace(Some(item));
+    }
+
+    fn item(&self) -> ListRowItem {
         self.imp()
-            .row
+            .item
             .borrow()
             .clone()
-            .expect("RowObject initialized with row")
+            .expect("RowObject initialized with item")
     }
+}
+
+struct SmoothScrollState {
+    target: f64,
+    active: bool,
+    last_frame_us: i64,
 }
 
 pub struct GridCanvas {
@@ -70,17 +100,25 @@ pub struct GridCanvas {
     row_store: gio::ListStore,
     list_view: gtk4::ListView,
     grid_scroll: gtk4::ScrolledWindow,
-    timeline_box: gtk4::Box,
-    timeline_scroll: gtk4::ScrolledWindow,
+    live_items: Rc<RefCell<Vec<glib::WeakRef<gtk4::ListItem>>>>,
+    packed_items: Rc<RefCell<Vec<ListRowItem>>>,
+    smooth_scroll: Rc<RefCell<SmoothScrollState>>,
     records: Rc<RefCell<Vec<ImageRecord>>>,
     selected_ids: Rc<RefCell<HashSet<i64>>>,
-    last_clicked_index: Rc<Cell<Option<usize>>>,
+    last_clicked_id: Rc<Cell<Option<i64>>>,
     /// Zoom level 1..=7 (1 = zoomed out compact rows, 7 = zoomed in large rows).
     zoom_level: Rc<Cell<i32>>,
     viewport_width: Rc<Cell<i32>>,
+    latest_raw_width: Rc<Cell<i32>>,
+    viewport_initialized: Rc<Cell<bool>>,
+    pending_resize: Rc<RefCell<Option<glib::SourceId>>>,
+    /// Suppresses intermediate resize ticks while OverlaySplitView plays its spring animation.
+    resize_freeze_until: Rc<Cell<Option<Instant>>>,
+    panel_anim_gen: Rc<Cell<u64>>,
     select_mode: Rc<Cell<bool>>,
     show_channel_badges: Rc<Cell<bool>>,
-    timeline_row_limit: Rc<Cell<usize>>,
+    timeline_mode: Rc<Cell<bool>>,
+    chronological_sort: Rc<Cell<bool>>,
     root: PathBuf,
     loader: Rc<AsyncThumbLoader>,
     on_selection_change: Rc<RefCell<Box<dyn Fn(Vec<ImageRecord>, Option<ImageRecord>)>>>,
@@ -98,14 +136,28 @@ impl GridCanvas {
     ) -> Rc<Self> {
         let row_store = gio::ListStore::new::<RowObject>();
         let no_sel = gtk4::NoSelection::new(Some(row_store.clone()));
+        let live_items: Rc<RefCell<Vec<glib::WeakRef<gtk4::ListItem>>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let packed_items: Rc<RefCell<Vec<ListRowItem>>> = Rc::new(RefCell::new(Vec::new()));
         let zoom_level = Rc::new(Cell::new(4));
         let viewport_width = Rc::new(Cell::new(920));
+        let latest_raw_width = Rc::new(Cell::new(962));
+        let viewport_initialized = Rc::new(Cell::new(false));
+        let pending_resize: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let resize_freeze_until = Rc::new(Cell::new(None));
+        let panel_anim_gen = Rc::new(Cell::new(0));
         let select_mode = Rc::new(Cell::new(false));
         let show_channel_badges = Rc::new(Cell::new(false));
+        let timeline_mode = Rc::new(Cell::new(false));
+        let chronological_sort = Rc::new(Cell::new(true));
         let records: Rc<RefCell<Vec<ImageRecord>>> = Rc::new(RefCell::new(Vec::new()));
         let selected_ids: Rc<RefCell<HashSet<i64>>> = Rc::new(RefCell::new(HashSet::new()));
-        let last_clicked_index = Rc::new(Cell::new(None));
-        let timeline_row_limit = Rc::new(Cell::new(INITIAL_TIMELINE_ROWS));
+        let last_clicked_id = Rc::new(Cell::new(None));
+        let smooth_scroll = Rc::new(RefCell::new(SmoothScrollState {
+            target: 0.0,
+            active: false,
+            last_frame_us: 0,
+        }));
 
         let on_selection_change: Rc<RefCell<Box<dyn Fn(Vec<ImageRecord>, Option<ImageRecord>)>>> =
             Rc::new(RefCell::new(Box::new(on_selection_change)));
@@ -115,7 +167,8 @@ impl GridCanvas {
             Rc::new(RefCell::new(Box::new(on_jump_channel)));
 
         let factory = gtk4::SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
+        let live_setup = live_items.clone();
+        factory.connect_setup(move |_, obj| {
             let item = obj
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem in setup");
@@ -123,8 +176,9 @@ impl GridCanvas {
             item.set_selectable(false);
             item.set_focusable(false);
             let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, ROW_GAP);
-            row_box.set_halign(gtk4::Align::Start);
+            row_box.set_hexpand(true);
             item.set_child(Some(&row_box));
+            live_setup.borrow_mut().push(item.downgrade());
         });
 
         let list_view = gtk4::ListView::builder()
@@ -136,8 +190,6 @@ impl GridCanvas {
             .css_classes(["koma-gallery-list"])
             .build();
 
-        // PolicyType::External hides horizontal scrollbar while allowing the viewport to shrink
-        // freely when Inspector opens or niri splits narrow.
         let grid_scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::External)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
@@ -148,23 +200,7 @@ impl GridCanvas {
             .child(&list_view)
             .build();
 
-        let timeline_box = gtk4::Box::new(gtk4::Orientation::Vertical, 20);
-        timeline_box.set_margin_top(58);
-        timeline_box.set_margin_bottom(36);
-        timeline_box.set_margin_start(14);
-        timeline_box.set_margin_end(14);
-
-        let timeline_scroll = gtk4::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk4::PolicyType::External)
-            .vscrollbar_policy(gtk4::PolicyType::Automatic)
-            .propagate_natural_width(false)
-            .min_content_width(220)
-            .focusable(true)
-            .can_focus(true)
-            .vexpand(true)
-            .hexpand(true)
-            .child(&timeline_box)
-            .build();
+        attach_smooth_wheel(&grid_scroll, smooth_scroll.clone());
 
         let empty_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
         empty_page.set_valign(gtk4::Align::Center);
@@ -181,10 +217,11 @@ impl GridCanvas {
         empty_page.append(&empty_sub);
 
         let stack = gtk4::Stack::new();
+        stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+        stack.set_transition_duration(120);
         stack.set_vexpand(true);
         stack.set_hexpand(true);
-        stack.add_named(&grid_scroll, Some("grid"));
-        stack.add_named(&timeline_scroll, Some("timeline"));
+        stack.add_named(&grid_scroll, Some("list"));
         stack.add_named(&empty_page, Some("empty"));
 
         let canvas = Rc::new(Self {
@@ -192,16 +229,23 @@ impl GridCanvas {
             row_store,
             list_view,
             grid_scroll,
-            timeline_box,
-            timeline_scroll,
+            live_items,
+            packed_items,
+            smooth_scroll,
             records,
             selected_ids,
-            last_clicked_index,
+            last_clicked_id,
             zoom_level,
             viewport_width,
+            latest_raw_width,
+            viewport_initialized,
+            pending_resize,
+            resize_freeze_until,
+            panel_anim_gen,
             select_mode,
             show_channel_badges,
-            timeline_row_limit,
+            timeline_mode,
+            chronological_sort,
             root,
             loader,
             on_selection_change,
@@ -220,7 +264,12 @@ impl GridCanvas {
             let Some(row_box) = item.child().and_downcast::<gtk4::Box>() else {
                 return;
             };
-            c_bind.populate_justified_row(&row_box, &row_obj.row(), c_bind.show_channel_badges.get());
+            c_bind.populate_row_item(
+                &row_box,
+                &row_obj.item(),
+                c_bind.show_channel_badges.get(),
+                false,
+            );
         });
 
         factory.connect_unbind(|_, obj| {
@@ -228,10 +277,12 @@ impl GridCanvas {
                 .downcast_ref::<gtk4::ListItem>()
                 .expect("ListItem in unbind");
             if let Some(row_box) = item.child().and_downcast::<gtk4::Box>() {
+                row_box.set_widget_name("");
                 while let Some(child) = row_box.first_child() {
                     if let Some(card) = child.downcast_ref::<gtk4::Box>()
                         && let Some(overlay) = card.first_child().and_downcast::<gtk4::Overlay>()
-                        && let Some(picture) = overlay.child().and_downcast::<gtk4::Picture>()
+                        && let Some(pic_wrap) = overlay.child().and_downcast::<gtk4::Box>()
+                        && let Some(picture) = pic_wrap.first_child().and_downcast::<gtk4::Picture>()
                     {
                         picture.set_widget_name("");
                         picture.set_paintable(gdk::Paintable::NONE);
@@ -244,38 +295,160 @@ impl GridCanvas {
         canvas
     }
 
-    fn populate_justified_row(
-        self: &Rc<Self>,
-        row_box: &gtk4::Box,
-        row: &JustifiedRow,
-        with_channel_badge: bool,
-    ) {
-        while let Some(child) = row_box.first_child() {
-            row_box.remove(&child);
-        }
+    /// Subtle glide-up + fade when switching between Home / channels / Grid / Timeline.
+    fn pulse_panel_transition(&self) {
+        let next_gen = self.panel_anim_gen.get().wrapping_add(1);
+        self.panel_anim_gen.set(next_gen);
+        self.list_view.add_css_class("koma-panel-enter");
+        let lv = self.list_view.clone();
+        let gen_ref = self.panel_anim_gen.clone();
+        glib::timeout_add_local_once(Duration::from_millis(18), move || {
+            if gen_ref.get() == next_gen {
+                lv.remove_css_class("koma-panel-enter");
+            }
+        });
+    }
 
-        let selected_snapshot = self.selected_ids.borrow().clone();
-        let show_checks = self.select_mode.get() || selected_snapshot.len() > 1;
-
-        for tile in &row.tiles {
-            let is_sel = selected_snapshot.contains(&tile.record.id);
-            let card = self.build_tile_card(
-                tile.index,
-                &tile.record,
-                tile.width,
-                row.height,
-                is_sel,
-                show_checks,
-                with_channel_badge,
-            );
-            row_box.append(&card);
+    fn current_raw_width(&self) -> i32 {
+        let w = self.grid_scroll.width();
+        if w > 0 {
+            w
+        } else {
+            self.latest_raw_width.get()
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Called right when a sidebar (Inspector or left sidebar) begins sliding so the spring
+    /// animation runs at full 60/120fps with zero mid-animation repacks, then settles cleanly once.
+    pub fn notify_sidebar_animating(self: &Rc<Self>, delta_px: i32) {
+        if let Some(prev) = self.pending_resize.borrow_mut().take() {
+            prev.remove();
+        }
+        // When opening Inspector (shrinking gallery), pre-pack once to final width immediately
+        // so the sidebar slides cleanly into empty space at 120fps.
+        if delta_px < 0 && self.viewport_initialized.get() {
+            let target_usable = (self.current_raw_width() + delta_px - CANVAS_PAD_X).max(260);
+            self.viewport_width.set(target_usable);
+            if !self.records.borrow().is_empty() {
+                let c = self.clone();
+                glib::idle_add_local_once(move || c.repack_rows_in_place(true));
+            }
+        }
+        self.resize_freeze_until
+            .set(Some(Instant::now() + Duration::from_millis(420)));
+        let c = self.clone();
+        let src = glib::timeout_add_local_once(Duration::from_millis(430), move || {
+            *c.pending_resize.borrow_mut() = None;
+            c.resize_freeze_until.set(None);
+            let final_usable = (c.current_raw_width() - CANVAS_PAD_X).max(260);
+            if (c.viewport_width.get() - final_usable).abs() >= 4 {
+                c.viewport_width.set(final_usable);
+                if !c.records.borrow().is_empty() {
+                    c.repack_rows_in_place(true);
+                }
+            }
+        });
+        *self.pending_resize.borrow_mut() = Some(src);
+    }
+
+    fn populate_row_item(
+        self: &Rc<Self>,
+        row_box: &gtk4::Box,
+        item: &ListRowItem,
+        with_channel_badge: bool,
+        allow_reuse: bool,
+    ) {
+        match item {
+            ListRowItem::Header {
+                label,
+                count,
+                first,
+            } => {
+                while let Some(child) = row_box.first_child() {
+                    row_box.remove(&child);
+                }
+                row_box.set_widget_name("koma-hdr");
+                row_box.set_halign(gtk4::Align::Fill);
+                row_box.set_spacing(10);
+                row_box.set_margin_top(if *first { 2 } else { 14 });
+                row_box.set_margin_bottom(4);
+
+                let title = gtk4::Label::builder()
+                    .label(label.to_uppercase())
+                    .css_classes(["koma-timeline-title"])
+                    .build();
+                let count_lbl = gtk4::Label::builder()
+                    .label(count.to_string())
+                    .css_classes(["koma-tabular"])
+                    .build();
+                let rule = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+                rule.add_css_class("koma-timeline-rule");
+                rule.set_hexpand(true);
+                rule.set_valign(gtk4::Align::Center);
+                row_box.append(&title);
+                row_box.append(&count_lbl);
+                row_box.append(&rule);
+            }
+            ListRowItem::Images(row) => {
+                let recs = self.records.borrow();
+                if allow_reuse && row_box.widget_name() == "koma-imgs" {
+                    let mut existing = Vec::new();
+                    let mut c = row_box.first_child();
+                    while let Some(w) = c {
+                        existing.push(w.clone());
+                        c = w.next_sibling();
+                    }
+                    let same_tiles = existing.len() == row.tiles.len()
+                        && existing.iter().zip(row.tiles.iter()).all(|(w, t)| {
+                            recs.get(t.index)
+                                .is_some_and(|r| w.widget_name() == r.id.to_string().as_str())
+                        });
+                    if same_tiles {
+                        let ids = self.selected_ids.borrow();
+                        let show_checks = self.select_mode.get() || ids.len() > 1;
+                        for (w, tile) in existing.iter().zip(row.tiles.iter()) {
+                            if let Some(overlay) = w.first_child().and_downcast::<gtk4::Overlay>() {
+                                overlay.set_size_request(tile.width, row.height);
+                            }
+                        }
+                        Self::update_row_selection(row_box, &ids, show_checks);
+                        return;
+                    }
+                }
+
+                while let Some(child) = row_box.first_child() {
+                    row_box.remove(&child);
+                }
+                row_box.set_widget_name("koma-imgs");
+                row_box.set_halign(gtk4::Align::Start);
+                row_box.set_spacing(ROW_GAP);
+                row_box.set_margin_top(0);
+                row_box.set_margin_bottom(0);
+
+                let selected_snapshot = self.selected_ids.borrow().clone();
+                let show_checks = self.select_mode.get() || selected_snapshot.len() > 1;
+
+                for tile in &row.tiles {
+                    let Some(rec) = recs.get(tile.index) else {
+                        continue;
+                    };
+                    let is_sel = selected_snapshot.contains(&rec.id);
+                    let card = self.build_tile_card(
+                        rec,
+                        tile.width,
+                        row.height,
+                        is_sel,
+                        show_checks,
+                        with_channel_badge,
+                    );
+                    row_box.append(&card);
+                }
+            }
+        }
+    }
+
     fn build_tile_card(
         self: &Rc<Self>,
-        global_idx: usize,
         rec: &ImageRecord,
         tile_w: i32,
         tile_h: i32,
@@ -298,6 +471,15 @@ impl GridCanvas {
         let thumb_abs = self.root.join(&rec.thumb_path);
         self.loader.bind_picture(&picture, &thumb_abs);
 
+        // Scales slightly inward on selection (Apple Photos / Eagle style) inside the accent matte
+        // so selection is crisp on pure-white manga panels and dark scenes alike, with zero shadow.
+        let pic_wrap = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        pic_wrap.add_css_class("koma-tile-media");
+        pic_wrap.set_overflow(gtk4::Overflow::Hidden);
+        pic_wrap.set_hexpand(true);
+        pic_wrap.set_vexpand(true);
+        pic_wrap.append(&picture);
+
         let check = gtk4::Label::builder()
             .label("✓")
             .name("koma-check")
@@ -307,28 +489,11 @@ impl GridCanvas {
             .css_classes(["koma-check-badge"])
             .build();
 
-        // Hover-only bottom scrim keeps the gallery borderless and free of permanent text static.
-        let scrim = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-        scrim.add_css_class("koma-tile-scrim");
-        scrim.set_valign(gtk4::Align::End);
-        scrim.set_hexpand(true);
-        scrim.set_can_target(false);
-        let caption = gtk4::Label::builder()
-            .label(&rec.filename)
-            .xalign(0.0)
-            .hexpand(true)
-            .ellipsize(gtk4::pango::EllipsizeMode::Middle)
-            .single_line_mode(true)
-            .css_classes(["koma-tile-caption"])
-            .build();
-        scrim.append(&caption);
-
         let overlay = gtk4::Overlay::new();
         overlay.set_size_request(tile_w, tile_h);
         overlay.set_overflow(gtk4::Overflow::Hidden);
         overlay.add_css_class("koma-tile-frame");
-        overlay.set_child(Some(&picture));
-        overlay.add_overlay(&scrim);
+        overlay.set_child(Some(&pic_wrap));
         overlay.add_overlay(&check);
 
         if with_channel_badge {
@@ -348,31 +513,176 @@ impl GridCanvas {
 
         card.append(&overlay);
 
+        // Look up the record dynamically by ID so deletes/sorts never leave stale indices.
         let click = gtk4::GestureClick::new();
         let c_click = self.clone();
-        let rec_click = rec.clone();
+        let rec_id = rec.id;
         click.connect_released(move |gesture, n_press, _, _| {
+            c_click.list_view.grab_focus();
+            let Some((idx, live_rec)) = c_click
+                .records
+                .borrow()
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.id == rec_id)
+                .map(|(i, r)| (i, r.clone()))
+            else {
+                return;
+            };
             if n_press >= 2 {
-                c_click.select_single(global_idx, &rec_click);
-                (c_click.on_activate_image.borrow())(rec_click.clone());
+                c_click.select_single(&live_rec);
+                (c_click.on_activate_image.borrow())(live_rec);
                 return;
             }
             let mods = gesture.current_event_state();
-            c_click.handle_tile_click(global_idx, &rec_click, mods);
+            c_click.handle_tile_click(idx, &live_rec, mods);
         });
         overlay.add_controller(click);
         card
     }
 
-    fn select_single(self: &Rc<Self>, idx: usize, rec: &ImageRecord) {
+    fn select_single(self: &Rc<Self>, rec: &ImageRecord) {
         {
             let mut ids = self.selected_ids.borrow_mut();
             ids.clear();
             ids.insert(rec.id);
         }
-        self.last_clicked_index.set(Some(idx));
+        self.last_clicked_id.set(Some(rec.id));
         self.refresh_selection_visuals();
         (self.on_selection_change.borrow())(vec![rec.clone()], Some(rec.clone()));
+    }
+
+    /// Move selection spatially with arrow keys and smoothly scroll the selected tile into view.
+    pub fn move_selection(self: &Rc<Self>, dir: NavDir, extend: bool) -> bool {
+        let recs = self.records.borrow().clone();
+        if recs.is_empty() {
+            return false;
+        }
+
+        let cur_idx = self
+            .last_clicked_id
+            .get()
+            .and_then(|id| recs.iter().position(|r| r.id == id));
+
+        let next = match cur_idx {
+            None => 0,
+            Some(cur) => match dir {
+                NavDir::Left => cur.saturating_sub(1),
+                NavDir::Right => (cur + 1).min(recs.len() - 1),
+                NavDir::Up => self.spatial_vertical_step(cur, -1).unwrap_or(cur),
+                NavDir::Down => self.spatial_vertical_step(cur, 1).unwrap_or(cur),
+            },
+        };
+
+        let target_rec = recs[next].clone();
+        {
+            let mut ids = self.selected_ids.borrow_mut();
+            if !extend && !self.select_mode.get() {
+                ids.clear();
+            }
+            ids.insert(target_rec.id);
+        }
+        self.last_clicked_id.set(Some(target_rec.id));
+
+        let selected_list: Vec<ImageRecord> = {
+            let ids = self.selected_ids.borrow();
+            recs.iter().filter(|r| ids.contains(&r.id)).cloned().collect()
+        };
+        self.refresh_selection_visuals();
+        self.scroll_index_into_view(next);
+        (self.on_selection_change.borrow())(selected_list, Some(target_rec));
+        true
+    }
+
+    fn spatial_vertical_step(&self, current_idx: usize, step: isize) -> Option<usize> {
+        let items = self.packed_items.borrow();
+        let mut cur_row_pos = None;
+        let mut cur_center_x = 0.0f64;
+
+        for (r_idx, item) in items.iter().enumerate() {
+            if let ListRowItem::Images(row) = item {
+                let mut x = 0.0f64;
+                for tile in &row.tiles {
+                    let w = tile.width as f64;
+                    if tile.index == current_idx {
+                        cur_row_pos = Some(r_idx);
+                        cur_center_x = x + w * 0.5;
+                        break;
+                    }
+                    x += w + (ROW_GAP as f64);
+                }
+                if cur_row_pos.is_some() {
+                    break;
+                }
+            }
+        }
+
+        let start = cur_row_pos? as isize;
+        let mut probe = start + step;
+        while probe >= 0 && (probe as usize) < items.len() {
+            if let ListRowItem::Images(row) = &items[probe as usize] {
+                let mut best_idx = row.tiles.first()?.index;
+                let mut best_dist = f64::INFINITY;
+                let mut x = 0.0f64;
+                for tile in &row.tiles {
+                    let w = tile.width as f64;
+                    let center = x + w * 0.5;
+                    let dist = (center - cur_center_x).abs();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = tile.index;
+                    }
+                    x += w + (ROW_GAP as f64);
+                }
+                return Some(best_idx);
+            }
+            probe += step;
+        }
+        None
+    }
+
+    fn scroll_index_into_view(&self, target_idx: usize) {
+        let items = self.packed_items.borrow();
+        let mut y = TOP_LIST_PAD;
+        let mut found = None;
+        for item in items.iter() {
+            match item {
+                ListRowItem::Header { first, .. } => {
+                    y += HEADER_ROW_HEIGHT + if *first { 0.0 } else { 14.0 };
+                }
+                ListRowItem::Images(row) => {
+                    let h = (row.height + ROW_GAP) as f64;
+                    if row.tiles.iter().any(|t| t.index == target_idx) {
+                        found = Some((y, y + h));
+                        break;
+                    }
+                    y += h;
+                }
+            }
+        }
+        drop(items);
+
+        let Some((row_top, row_bottom)) = found else {
+            return;
+        };
+        let vadj = self.grid_scroll.vadjustment();
+        let cur = vadj.value();
+        let page = vadj.page_size();
+        let max = (vadj.upper() - page).max(0.0);
+
+        let top_pad = 64.0;
+        let bot_pad = 20.0;
+        let desired = if row_top < cur + top_pad {
+            Some((row_top - top_pad).clamp(0.0, max))
+        } else if row_bottom > cur + page - bot_pad {
+            Some((row_bottom - page + bot_pad).clamp(0.0, max))
+        } else {
+            None
+        };
+
+        if let Some(target) = desired {
+            smooth_scroll_to(&self.grid_scroll, &self.smooth_scroll, target);
+        }
     }
 
     fn handle_tile_click(
@@ -387,8 +697,13 @@ impl GridCanvas {
 
         {
             let mut ids = self.selected_ids.borrow_mut();
+            let recs = self.records.borrow();
+            let anchor = self
+                .last_clicked_id
+                .get()
+                .and_then(|aid| recs.iter().position(|r| r.id == aid));
             if shift
-                && let Some(anchor) = self.last_clicked_index.get()
+                && let Some(anchor) = anchor
             {
                 let (lo, hi) = if anchor <= idx {
                     (anchor, idx)
@@ -398,7 +713,6 @@ impl GridCanvas {
                 if !ctrl && !self.select_mode.get() {
                     ids.clear();
                 }
-                let recs = self.records.borrow();
                 for r in recs.iter().skip(lo).take(hi - lo + 1) {
                     ids.insert(r.id);
                 }
@@ -406,11 +720,11 @@ impl GridCanvas {
                 if !ids.remove(&rec.id) {
                     ids.insert(rec.id);
                 }
-                self.last_clicked_index.set(Some(idx));
+                self.last_clicked_id.set(Some(rec.id));
             } else {
                 ids.clear();
                 ids.insert(rec.id);
-                self.last_clicked_index.set(Some(idx));
+                self.last_clicked_id.set(Some(rec.id));
             }
         }
 
@@ -456,56 +770,74 @@ impl GridCanvas {
         let ids = self.selected_ids.borrow().clone();
         let show_checks = self.select_mode.get() || ids.len() > 1;
 
-        if self.stack.visible_child_name().as_deref() == Some("grid") {
-            let mut row_widget = self.list_view.first_child();
-            while let Some(rw) = row_widget {
-                if let Some(row_box) = rw.first_child().and_downcast::<gtk4::Box>() {
-                    Self::update_row_selection(&row_box, &ids, show_checks);
-                }
-                row_widget = rw.next_sibling();
+        let mut row_widget = self.list_view.first_child();
+        while let Some(rw) = row_widget {
+            if let Some(row_box) = rw.first_child().and_downcast::<gtk4::Box>() {
+                Self::update_row_selection(&row_box, &ids, show_checks);
             }
-        } else if self.stack.visible_child_name().as_deref() == Some("timeline") {
-            let mut sec = self.timeline_box.first_child();
-            while let Some(sw) = sec {
-                if let Some(sec_box) = sw.downcast_ref::<gtk4::Box>() {
-                    let mut child = sec_box.first_child();
-                    while let Some(cw) = child {
-                        if let Some(row_box) = cw.downcast_ref::<gtk4::Box>()
-                            && row_box.orientation() == gtk4::Orientation::Horizontal
-                        {
-                            Self::update_row_selection(row_box, &ids, show_checks);
-                        }
-                        child = cw.next_sibling();
-                    }
-                }
-                sec = sw.next_sibling();
-            }
+            row_widget = rw.next_sibling();
         }
     }
 
     pub fn focus_widget(&self) -> gtk4::Widget {
-        if self.stack.visible_child_name().as_deref() == Some("grid") {
-            self.list_view.clone().upcast()
-        } else {
-            self.timeline_scroll.clone().upcast()
-        }
+        self.list_view.clone().upcast()
     }
 
     pub fn focus_canvas(&self) {
-        self.focus_widget().grab_focus();
+        self.list_view.grab_focus();
     }
 
+    fn reset_scroll(&self) {
+        let mut st = self.smooth_scroll.borrow_mut();
+        st.active = false;
+        st.target = 0.0;
+        drop(st);
+        self.grid_scroll.vadjustment().set_value(0.0);
+    }
+
+    /// Never mutates widgets synchronously inside GTK's `size_allocate` pass; defers cleanly so
+    /// niri window drags and sidebar spring animations stay at native monitor framerate.
     pub fn set_viewport_width(self: &Rc<Self>, width: i32) {
+        self.latest_raw_width.set(width);
         let usable = (width - CANVAS_PAD_X).max(260);
-        if (self.viewport_width.get() - usable).abs() < 8 {
+
+        if !self.viewport_initialized.get() {
+            self.viewport_width.set(usable);
+            self.viewport_initialized.set(true);
+            let c = self.clone();
+            glib::idle_add_local_once(move || {
+                if !c.records.borrow().is_empty() {
+                    c.repack_rows_in_place(true);
+                }
+            });
             return;
         }
-        self.viewport_width.set(usable);
-        match self.stack.visible_child_name().as_deref() {
-            Some("grid") => self.repack_rows(),
-            Some("timeline") => self.rebuild_timeline(),
-            _ => {}
+
+        if let Some(until) = self.resize_freeze_until.get()
+            && Instant::now() < until
+        {
+            return;
         }
+        if (self.viewport_width.get() - usable).abs() < 4 {
+            return;
+        }
+
+        if let Some(prev) = self.pending_resize.borrow_mut().take() {
+            prev.remove();
+        }
+        let c = self.clone();
+        let src = glib::timeout_add_local_once(Duration::from_millis(65), move || {
+            *c.pending_resize.borrow_mut() = None;
+            let settled = (c.current_raw_width() - CANVAS_PAD_X).max(260);
+            if (c.viewport_width.get() - settled).abs() < 4 {
+                return;
+            }
+            c.viewport_width.set(settled);
+            if !c.records.borrow().is_empty() {
+                c.repack_rows_in_place(true);
+            }
+        });
+        *self.pending_resize.borrow_mut() = Some(src);
     }
 
     pub fn set_records(
@@ -513,39 +845,71 @@ impl GridCanvas {
         recs: Vec<ImageRecord>,
         view_mode: &str,
         is_home: bool,
+        chronological_sort: bool,
+        preserve_scroll: bool,
     ) {
-        self.loader.bump_generation();
-        self.selected_ids.borrow_mut().clear();
-        self.last_clicked_index.set(None);
+        if !preserve_scroll {
+            self.loader.bump_generation();
+            self.selected_ids.borrow_mut().clear();
+            self.last_clicked_id.set(None);
+        } else {
+            let valid_ids: HashSet<i64> = recs.iter().map(|r| r.id).collect();
+            self.selected_ids
+                .borrow_mut()
+                .retain(|id| valid_ids.contains(id));
+            if let Some(lid) = self.last_clicked_id.get()
+                && !valid_ids.contains(&lid)
+            {
+                self.last_clicked_id.set(None);
+            }
+        }
+
         self.show_channel_badges.set(is_home);
-        self.timeline_row_limit.set(INITIAL_TIMELINE_ROWS);
+        self.timeline_mode.set(view_mode == "timeline");
+        self.chronological_sort.set(chronological_sort);
         *self.records.borrow_mut() = recs;
 
         if self.records.borrow().is_empty() {
+            self.packed_items.borrow_mut().clear();
             self.row_store.remove_all();
             self.stack.set_visible_child_name("empty");
             (self.on_selection_change.borrow())(Vec::new(), None);
             return;
         }
 
-        self.set_mode(view_mode);
-        let first = self.records.borrow().first().cloned();
-        (self.on_selection_change.borrow())(Vec::new(), first);
+        self.repack_rows_in_place(false);
+        self.stack.set_visible_child_name("list");
+        if !preserve_scroll {
+            self.reset_scroll();
+            self.pulse_panel_transition();
+        }
+
+        let selected_list: Vec<ImageRecord> = {
+            let ids = self.selected_ids.borrow();
+            self.records
+                .borrow()
+                .iter()
+                .filter(|r| ids.contains(&r.id))
+                .cloned()
+                .collect()
+        };
+        let focused = selected_list
+            .first()
+            .cloned()
+            .or_else(|| self.records.borrow().first().cloned());
+        (self.on_selection_change.borrow())(selected_list, focused);
     }
 
     pub fn set_mode(self: &Rc<Self>, view_mode: &str) {
+        let next_timeline = view_mode == "timeline";
         if self.records.borrow().is_empty() {
             self.stack.set_visible_child_name("empty");
             return;
         }
-        if view_mode == "timeline" {
-            self.rebuild_timeline();
-            self.stack.set_visible_child_name("timeline");
-        } else {
-            self.repack_rows();
-            self.stack.set_visible_child_name("grid");
-            self.grid_scroll.vadjustment().set_value(0.0);
-        }
+        self.timeline_mode.set(next_timeline);
+        self.repack_rows_in_place(false);
+        self.stack.set_visible_child_name("list");
+        self.pulse_panel_transition();
     }
 
     pub fn set_zoom_level(self: &Rc<Self>, level: i32) {
@@ -554,11 +918,8 @@ impl GridCanvas {
             return;
         }
         self.zoom_level.set(clamped);
-
-        match self.stack.visible_child_name().as_deref() {
-            Some("grid") => self.repack_rows(),
-            Some("timeline") => self.rebuild_timeline(),
-            _ => {}
+        if !self.records.borrow().is_empty() {
+            self.repack_rows_in_place(true);
         }
     }
 
@@ -586,7 +947,7 @@ impl GridCanvas {
 
     pub fn clear_selection(self: &Rc<Self>) {
         self.selected_ids.borrow_mut().clear();
-        self.last_clicked_index.set(None);
+        self.last_clicked_id.set(None);
         self.refresh_selection_visuals();
         let focused = self.records.borrow().first().cloned();
         (self.on_selection_change.borrow())(Vec::new(), focused);
@@ -600,130 +961,220 @@ impl GridCanvas {
         self.records.borrow().iter().position(|r| r.id == image_id)
     }
 
-    fn repack_rows(&self) {
-        let recs = self.records.borrow();
+    fn repack_rows_in_place(self: &Rc<Self>, allow_reuse: bool) {
+        let freezing = self
+            .resize_freeze_until
+            .get()
+            .is_some_and(|until| Instant::now() < until);
+        if !freezing && self.grid_scroll.width() > 0 {
+            let live_usable = (self.grid_scroll.width() - CANVAS_PAD_X).max(260);
+            self.viewport_width.set(live_usable);
+            self.viewport_initialized.set(true);
+        }
         let vw = self.viewport_width.get();
         let target_h = target_row_height(self.zoom_level.get(), vw);
-        let rows = pack_justified_rows(&recs, 0, vw, target_h, ROW_GAP);
-        let objects: Vec<RowObject> = rows.into_iter().map(RowObject::new).collect();
-        let old_len = self.row_store.n_items();
-        self.row_store.splice(0, old_len, &objects);
-    }
 
-    fn rebuild_timeline(self: &Rc<Self>) {
-        while let Some(child) = self.timeline_box.first_child() {
-            self.timeline_box.remove(&child);
-        }
-
-        let recs = self.records.borrow().clone();
-        if recs.is_empty() {
-            return;
-        }
-
-        // Group into Today / Yesterday / Month buckets so 1-image days pack tightly without
-        // wasting full horizontal lines on single images.
-        let mut groups: Vec<(String, Vec<(usize, ImageRecord)>)> = Vec::new();
-        for (idx, rec) in recs.into_iter().enumerate() {
-            let bucket = timeline_bucket_label(rec.created_at);
-            if let Some(last) = groups.last_mut()
-                && last.0 == bucket
-            {
-                last.1.push((idx, rec));
-            } else {
-                groups.push((bucket, vec![(idx, rec)]));
-            }
-        }
-
-        let vw = self.viewport_width.get();
-        let target_h = target_row_height(self.zoom_level.get(), vw);
-        let with_badges = self.show_channel_badges.get();
-        let row_limit = self.timeline_row_limit.get();
-        let mut rows_rendered = 0usize;
-        let mut has_more = false;
-
-        for (label, items) in groups {
-            if rows_rendered >= row_limit {
-                has_more = true;
-                break;
-            }
-
-            let section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-
-            let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-            header.set_margin_bottom(2);
-            let title = gtk4::Label::builder()
-                .label(label.to_uppercase())
-                .css_classes(["koma-timeline-title"])
-                .build();
-            let count = gtk4::Label::builder()
-                .label(items.len().to_string())
-                .css_classes(["koma-tabular"])
-                .build();
-            let rule = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            rule.add_css_class("koma-timeline-rule");
-            rule.set_hexpand(true);
-            rule.set_valign(gtk4::Align::Center);
-            header.append(&title);
-            header.append(&count);
-            header.append(&rule);
-            section.append(&header);
-
-            let packed = pack_indexed_justified_rows(&items, vw, target_h, ROW_GAP);
-            for row in packed {
-                if rows_rendered >= row_limit {
-                    has_more = true;
-                    break;
+        let new_items: Vec<ListRowItem> = {
+            let recs = self.records.borrow();
+            if self.timeline_mode.get() && self.chronological_sort.get() {
+                let mut bucketer = TimelineBucketer::new();
+                let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+                for (idx, rec) in recs.iter().enumerate() {
+                    let bucket = bucketer.label_for(rec.created_at);
+                    if let Some(last) = groups.last_mut()
+                        && last.0 == bucket
+                    {
+                        last.1.push(idx);
+                    } else {
+                        groups.push((bucket, vec![idx]));
+                    }
                 }
-                let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, ROW_GAP);
-                row_box.set_halign(gtk4::Align::Start);
-                self.populate_justified_row(&row_box, &row, with_badges);
-                section.append(&row_box);
-                rows_rendered += 1;
+
+                let mut items = Vec::new();
+                for (g_idx, (label, indices)) in groups.into_iter().enumerate() {
+                    let count = indices.len();
+                    items.push(ListRowItem::Header {
+                        label,
+                        count,
+                        first: g_idx == 0,
+                    });
+                    for row in pack_indices(&recs, &indices, vw, target_h, ROW_GAP) {
+                        items.push(ListRowItem::Images(row));
+                    }
+                }
+                items
+            } else {
+                pack_slice(&recs, vw, target_h, ROW_GAP)
+                    .into_iter()
+                    .map(ListRowItem::Images)
+                    .collect()
             }
+        };
 
-            self.timeline_box.append(&section);
+        let old_len = self.row_store.n_items() as usize;
+        let new_len = new_items.len();
+        let common = old_len.min(new_len);
+
+        for (i, item) in new_items.iter().take(common).enumerate() {
+            if let Some(row_obj) = self.row_store.item(i as u32).and_downcast::<RowObject>() {
+                row_obj.set_item(item.clone());
+            }
         }
 
-        if has_more {
-            let more_btn = gtk4::Button::builder()
-                .label("Load older images")
-                .halign(gtk4::Align::Center)
-                .margin_top(8)
-                .css_classes(["pill"])
-                .build();
-            let c_more = self.clone();
-            more_btn.connect_clicked(move |_| {
-                c_more
-                    .timeline_row_limit
-                    .set(c_more.timeline_row_limit.get() + INITIAL_TIMELINE_ROWS);
-                c_more.rebuild_timeline();
-            });
-            self.timeline_box.append(&more_btn);
+        if new_len > old_len {
+            let added: Vec<RowObject> = new_items[old_len..]
+                .iter()
+                .cloned()
+                .map(RowObject::new)
+                .collect();
+            self.row_store.splice(old_len as u32, 0, &added);
+        } else if new_len < old_len {
+            self.row_store.splice(
+                new_len as u32,
+                (old_len - new_len) as u32,
+                &[] as &[RowObject],
+            );
         }
+
+        *self.packed_items.borrow_mut() = new_items;
+
+        let with_badges = self.show_channel_badges.get();
+        let live: Vec<gtk4::ListItem> = {
+            let mut list = self.live_items.borrow_mut();
+            list.retain(|w| w.upgrade().is_some());
+            list.iter().filter_map(|w| w.upgrade()).collect()
+        };
+        // Update EVERY bound ListItem (both mapped on-screen and off-screen pre-buffered rows),
+        // otherwise GtkListView scrolls stale narrow/old rows into view without re-calling bind.
+        for list_item in live {
+            if let Some(row_obj) = list_item.item().and_downcast::<RowObject>()
+                && let Some(row_box) = list_item.child().and_downcast::<gtk4::Box>()
+            {
+                self.populate_row_item(&row_box, &row_obj.item(), with_badges, allow_reuse);
+                row_box.queue_resize();
+            }
+        }
+        self.list_view.queue_resize();
     }
 }
 
-fn timeline_bucket_label(unix_secs: i64) -> String {
-    let Ok(dt) = glib::DateTime::from_unix_local(unix_secs) else {
-        return "Earlier".to_string();
-    };
-    let Ok(now) = glib::DateTime::now_local() else {
-        return dt
-            .format("%B %Y")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| "Earlier".to_string());
-    };
-    if dt.ymd() == now.ymd() {
-        "Today".to_string()
-    } else if let Ok(yesterday) = now.add_days(-1)
-        && dt.ymd() == yesterday.ymd()
-    {
-        "Yesterday".to_string()
-    } else {
-        dt.format("%B %Y")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| "Earlier".to_string())
+struct TimelineBucketer {
+    today_ymd: Option<(i32, i32, i32)>,
+    yesterday_ymd: Option<(i32, i32, i32)>,
+    month_cache: HashMap<(i32, i32), String>,
+}
+
+impl TimelineBucketer {
+    fn new() -> Self {
+        let now = glib::DateTime::now_local().ok();
+        let today_ymd = now.as_ref().map(|d| d.ymd());
+        let yesterday_ymd = now.as_ref().and_then(|d| d.add_days(-1).ok()).map(|d| d.ymd());
+        Self {
+            today_ymd,
+            yesterday_ymd,
+            month_cache: HashMap::new(),
+        }
     }
+
+    fn label_for(&mut self, unix_secs: i64) -> String {
+        let Ok(dt) = glib::DateTime::from_unix_local(unix_secs) else {
+            return "Earlier".to_string();
+        };
+        let ymd = dt.ymd();
+        if self.today_ymd == Some(ymd) {
+            return "Today".to_string();
+        }
+        if self.yesterday_ymd == Some(ymd) {
+            return "Yesterday".to_string();
+        }
+        self.month_cache
+            .entry((ymd.0, ymd.1))
+            .or_insert_with(|| {
+                dt.format("%B %Y")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "Earlier".to_string())
+            })
+            .clone()
+    }
+}
+
+fn smooth_scroll_to(
+    scroll: &gtk4::ScrolledWindow,
+    state: &Rc<RefCell<SmoothScrollState>>,
+    target: f64,
+) {
+    let vadj = scroll.vadjustment();
+    let max = (vadj.upper() - vadj.page_size()).max(0.0);
+    let clamped = target.clamp(0.0, max);
+
+    let should_start_tick = {
+        let mut st = state.borrow_mut();
+        st.target = clamped;
+        if !st.active {
+            st.active = true;
+            st.last_frame_us = 0;
+            true
+        } else {
+            false
+        }
+    };
+
+    if should_start_tick {
+        let st_tick = state.clone();
+        let vadj_tick = vadj;
+        scroll.add_tick_callback(move |_, clock| {
+            let mut st = st_tick.borrow_mut();
+            if !st.active {
+                return glib::ControlFlow::Break;
+            }
+            let now_us = clock.frame_time();
+            let dt = if st.last_frame_us > 0 {
+                ((now_us - st.last_frame_us) as f64 / 1_000_000.0).clamp(0.001, 0.05)
+            } else {
+                0.016
+            };
+            st.last_frame_us = now_us;
+
+            let cur = vadj_tick.value();
+            let max = (vadj_tick.upper() - vadj_tick.page_size()).max(0.0);
+            let target = st.target.clamp(0.0, max);
+            let diff = target - cur;
+            if diff.abs() < 0.6 {
+                vadj_tick.set_value(target);
+                st.active = false;
+                return glib::ControlFlow::Break;
+            }
+            let alpha = 1.0 - (-18.0 * dt).exp();
+            vadj_tick.set_value((cur + diff * alpha).clamp(0.0, max));
+            glib::ControlFlow::Continue
+        });
+    }
+}
+
+/// Frame-synced exponential easing for discrete mouse-wheel ticks; leaves touchpad smooth scroll native.
+fn attach_smooth_wheel(scroll: &gtk4::ScrolledWindow, state: Rc<RefCell<SmoothScrollState>>) {
+    let ctrl = gtk4::EventControllerScroll::new(
+        gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::DISCRETE,
+    );
+    ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let scroll_ref = scroll.clone();
+    let state_cb = state;
+    ctrl.connect_scroll(move |_, _dx, dy| {
+        if dy.abs() < 0.0001 {
+            return glib::Propagation::Proceed;
+        }
+        let vadj = scroll_ref.vadjustment();
+        let cur = vadj.value();
+        let base = {
+            let st = state_cb.borrow();
+            if st.active { st.target } else { cur }
+        };
+        smooth_scroll_to(&scroll_ref, &state_cb, base + dy * WHEEL_STEP_PX);
+        glib::Propagation::Stop
+    });
+
+    scroll.add_controller(ctrl);
 }
 
 fn clamped_aspect(width: u32, height: u32) -> f64 {
@@ -743,34 +1194,28 @@ fn target_row_height(level: i32, viewport_width: i32) -> i32 {
         6 => 256.0,
         _ => 300.0,
     };
-    // Always auto-scale on wider windows so fullscreen shows 4-5 bold tiles per row
-    // instead of packing 7-8 tiny tiles across the width.
     let scale = ((viewport_width as f64) / 760.0).clamp(0.95, 1.44);
     (base * scale).round() as i32
 }
 
-fn pack_justified_rows(
+fn pack_slice(
     records: &[ImageRecord],
-    index_offset: usize,
     container_width: i32,
     target_height: i32,
     gap: i32,
 ) -> Vec<JustifiedRow> {
-    let indexed: Vec<(usize, ImageRecord)> = records
-        .iter()
-        .enumerate()
-        .map(|(i, r)| (i + index_offset, r.clone()))
-        .collect();
-    pack_indexed_justified_rows(&indexed, container_width, target_height, gap)
+    let indices: Vec<usize> = (0..records.len()).collect();
+    pack_indices(records, &indices, container_width, target_height, gap)
 }
 
-fn pack_indexed_justified_rows(
-    items: &[(usize, ImageRecord)],
+fn pack_indices(
+    records: &[ImageRecord],
+    indices: &[usize],
     container_width: i32,
     target_height: i32,
     gap: i32,
 ) -> Vec<JustifiedRow> {
-    if items.is_empty() || container_width <= 0 {
+    if indices.is_empty() || container_width <= 0 {
         return Vec::new();
     }
 
@@ -779,12 +1224,13 @@ fn pack_indexed_justified_rows(
     let g = gap as f64;
 
     let mut rows = Vec::new();
-    let mut current: Vec<(usize, &ImageRecord, f64)> = Vec::new();
+    let mut current: Vec<(usize, f64)> = Vec::new();
     let mut aspect_sum = 0.0f64;
 
-    for (idx, rec) in items {
+    for &idx in indices {
+        let rec = &records[idx];
         let aspect = clamped_aspect(rec.width, rec.height);
-        current.push((*idx, rec, aspect));
+        current.push((idx, aspect));
         aspect_sum += aspect;
 
         let gaps_w = g * ((current.len().saturating_sub(1)) as f64);
@@ -799,46 +1245,38 @@ fn pack_indexed_justified_rows(
     }
 
     if !current.is_empty() {
-        // Clamp final partial row so even a single ultra-wide image never overflows container_width.
-        let gaps_w = g * ((current.len().saturating_sub(1)) as f64);
-        let natural_w = aspect_sum * th + gaps_w;
-        let final_h = if natural_w > cw {
-            ((cw - gaps_w) / aspect_sum).max(64.0)
-        } else {
-            th
-        };
-        rows.push(finalize_row(&current, final_h, None, gap));
+        rows.push(finalize_row(&current, th, None, gap));
     }
 
     rows
 }
 
 fn finalize_row(
-    items: &[(usize, &ImageRecord, f64)],
-    height: f64,
-    justify_to_width: Option<i32>,
+    items: &[(usize, f64)],
+    row_height: f64,
+    fit_width: Option<i32>,
     gap: i32,
 ) -> JustifiedRow {
-    let h = height.round().max(64.0) as i32;
-    let mut tiles: Vec<RowTile> = items
+    let h = row_height.round().max(64.0) as i32;
+    let mut widths: Vec<i32> = items
         .iter()
-        .map(|(idx, rec, aspect)| RowTile {
-            index: *idx,
-            record: (*rec).clone(),
-            width: (height * aspect).round().max(48.0) as i32,
-        })
+        .map(|(_, aspect)| ((row_height * aspect).round() as i32).max(48))
         .collect();
 
-    if let Some(target_w) = justify_to_width {
-        let used: i32 = tiles.iter().map(|t| t.width).sum::<i32>()
-            + gap * (tiles.len().saturating_sub(1) as i32);
-        let diff = target_w - used;
-        if let Some(last) = tiles.last_mut()
-            && diff.abs() <= 32
-        {
-            last.width = (last.width + diff).max(48);
+    if let Some(target_w) = fit_width {
+        let gaps = gap * (items.len().saturating_sub(1) as i32);
+        let sum: i32 = widths.iter().sum::<i32>() + gaps;
+        let diff = target_w - sum;
+        if let Some(last) = widths.last_mut() {
+            *last = (*last + diff).max(48);
         }
     }
+
+    let tiles = items
+        .iter()
+        .zip(widths)
+        .map(|((idx, _), width)| RowTile { index: *idx, width })
+        .collect();
 
     JustifiedRow { height: h, tiles }
 }
@@ -847,42 +1285,45 @@ fn finalize_row(
 mod tests {
     use super::*;
 
-    fn fake_rec(id: i64, width: u32, height: u32) -> ImageRecord {
+    fn fake_rec(id: i64, w: u32, h: u32) -> ImageRecord {
         ImageRecord {
             id,
             channel_id: 1,
-            channel_slug: "ynu".to_string(),
-            filename: format!("ynu_{id:04}.png"),
-            rel_path: format!("media/ynu/ynu_{id:04}.png"),
-            thumb_path: format!("thumbs/ynu/ynu_{id:04}.webp"),
+            channel_slug: "rei".to_string(),
+            filename: format!("rei_{id:04}.png"),
+            rel_path: String::new(),
+            thumb_path: String::new(),
             mime_type: "image/png".to_string(),
-            width,
-            height,
-            size_bytes: 1000,
-            thumb_bytes: 100,
-            created_at: 1000,
+            width: w,
+            height: h,
+            size_bytes: 100,
+            thumb_bytes: 50,
+            created_at: 1000 + id,
         }
     }
 
     #[test]
     fn justified_rows_preserve_aspect_ratios_and_never_overflow_width() {
         let recs = vec![
-            fake_rec(1, 736, 1089),
-            fake_rec(2, 1920, 1080),
-            fake_rec(3, 959, 959),
-            fake_rec(4, 1920, 1080),
-            fake_rec(5, 600, 1000),
+            fake_rec(1, 1920, 1080),
+            fake_rec(2, 1080, 1920),
+            fake_rec(3, 1200, 1200),
+            fake_rec(4, 1600, 900),
+            fake_rec(5, 800, 1200),
+            fake_rec(6, 1400, 1000),
         ];
-
-        let rows = pack_justified_rows(&recs, 0, 900, 180, 10);
+        let container_w = 900;
+        let rows = pack_slice(&recs, container_w, 180, ROW_GAP);
         assert!(rows.len() >= 2);
 
-        for row in &rows {
+        for (i, row) in rows.iter().enumerate() {
             let total_w: i32 = row.tiles.iter().map(|t| t.width).sum::<i32>()
-                + 10 * (row.tiles.len().saturating_sub(1) as i32);
-            assert!(total_w <= 900, "row width {total_w} exceeded 900");
+                + ROW_GAP * (row.tiles.len().saturating_sub(1) as i32);
+            if i + 1 < rows.len() {
+                assert_eq!(total_w, container_w);
+            } else {
+                assert!(total_w <= container_w + 48);
+            }
         }
-        assert!(rows[0].tiles[1].width > rows[0].tiles[0].width * 2);
-        assert!(target_row_height(4, 1440) > target_row_height(4, 760));
     }
 }

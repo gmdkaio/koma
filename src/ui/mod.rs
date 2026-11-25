@@ -15,8 +15,8 @@ use libadwaita::prelude::*;
 
 use crate::storage::gdrive::{self, GDriveClientConfig};
 use crate::storage::sync::{SyncEvent, SyncHandle, SyncStatus};
-use crate::store::{Channel, ImageRecord, Store, default_data_dir};
-use crate::ui::grid::GridCanvas;
+use crate::store::{Channel, ChannelSort, ImageRecord, ImageSort, Store, default_data_dir};
+use crate::ui::grid::{GridCanvas, NavDir};
 use crate::ui::inspector::InspectorPane;
 use crate::ui::lightbox::LightboxView;
 use crate::ui::media_util::{AsyncThumbLoader, ThumbCache, load_texture};
@@ -39,12 +39,15 @@ struct AppCtx {
     sync_status: RefCell<SyncStatus>,
     thumb_cache: Rc<RefCell<ThumbCache>>,
     channels: RefCell<Vec<Channel>>,
+    channel_sort: Cell<ChannelSort>,
+    image_sort: Cell<ImageSort>,
     active_view: Cell<ActiveView>,
     view_mode: RefCell<String>,
     selected_images: RefCell<Vec<ImageRecord>>,
     focused_image: RefCell<Option<ImageRecord>>,
     select_mode: Cell<bool>,
     suppress_sidebar_select: Cell<bool>,
+    suppress_inspector_toggle: Cell<bool>,
 
     // Sidebar widgets
     left_split: adw::OverlaySplitView,
@@ -53,6 +56,9 @@ struct AppCtx {
     sync_dot: gtk4::Box,
     sync_label: gtk4::Label,
     home_row_btn: gtk4::Button,
+    new_ch_revealer: gtk4::Revealer,
+    new_ch_entry: gtk4::Entry,
+    editing_channel_id: Cell<Option<i64>>,
     channel_list: gtk4::ListBox,
     footer_count: gtk4::Label,
 
@@ -65,10 +71,9 @@ struct AppCtx {
     timeline_toggle: gtk4::ToggleButton,
     select_toggle: gtk4::ToggleButton,
     inspector_split: adw::OverlaySplitView,
-    inspector_toggle: gtk4::ToggleButton,
 
     // Multi-select floating bar (hidden unless multi-selecting)
-    batch_bar: gtk4::Box,
+    batch_revealer: gtk4::Revealer,
     batch_count_label: gtk4::Label,
 
     // Keep FileMonitor alive for the lifetime of the window so live gtk.css reloads work.
@@ -130,7 +135,11 @@ impl AppCtx {
     }
 
     fn reload_all(self: &Rc<Self>) {
-        let channels = match self.store.borrow().list_channels() {
+        let channels = match self
+            .store
+            .borrow()
+            .list_channels_sorted(self.channel_sort.get())
+        {
             Ok(c) => c,
             Err(e) => {
                 self.toast(&format!("Failed to load channels: {e}"));
@@ -145,17 +154,38 @@ impl AppCtx {
         if let ActiveView::Channel(id) = self.active_view.get()
             && !channels.iter().any(|c| c.id == id)
         {
-            self.active_view.set(
-                channels
-                    .first()
-                    .map(|c| ActiveView::Channel(c.id))
-                    .unwrap_or(ActiveView::Home),
-            );
+            self.active_view.set(ActiveView::Home);
         }
 
         *self.channels.borrow_mut() = channels;
         self.rebuild_sidebar();
-        self.reload_images();
+        self.reload_images_with_scroll(true);
+    }
+
+    fn reorder_channel_drop(self: &Rc<Self>, dragged_id: i64, target_id: i64) {
+        if dragged_id == target_id {
+            return;
+        }
+        let mut ids: Vec<i64> = self.channels.borrow().iter().map(|c| c.id).collect();
+        let Some(from) = ids.iter().position(|&id| id == dragged_id) else {
+            return;
+        };
+        let Some(to) = ids.iter().position(|&id| id == target_id) else {
+            return;
+        };
+        let item = ids.remove(from);
+        ids.insert(to, item);
+
+        if let Err(e) = self.store.borrow_mut().save_channel_order(&ids) {
+            self.toast(&format!("Reorder failed: {e}"));
+            return;
+        }
+        self.channel_sort.set(ChannelSort::Custom);
+        let _ = self
+            .store
+            .borrow()
+            .set_setting("channel_sort", ChannelSort::Custom.as_str());
+        self.reload_all();
     }
 
     fn rebuild_sidebar(self: &Rc<Self>) {
@@ -173,6 +203,7 @@ impl AppCtx {
             self.home_row_btn.remove_css_class("koma-home-active");
         }
 
+        let editing_id = self.editing_channel_id.get();
         let mut selected_idx: Option<i32> = None;
         for (idx, ch) in channels.iter().enumerate() {
             let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 5);
@@ -185,22 +216,118 @@ impl AppCtx {
                 .label("#")
                 .css_classes(["koma-channel-hash"])
                 .build();
-            let name = gtk4::Label::builder()
-                .label(&ch.slug)
-                .xalign(0.0)
-                .hexpand(true)
-                .ellipsize(gtk4::pango::EllipsizeMode::End)
-                .build();
-            let count = gtk4::Label::builder()
-                .label(ch.image_count.to_string())
-                .css_classes(["koma-tabular"])
-                .build();
             row_box.append(&hash);
-            row_box.append(&name);
-            row_box.append(&count);
+
+            if editing_id == Some(ch.id) {
+                let entry = gtk4::Entry::builder()
+                    .text(&ch.slug)
+                    .hexpand(true)
+                    .css_classes(["koma-inline-entry"])
+                    .build();
+                let ctx_act = self.clone();
+                let ch_id = ch.id;
+                let old_slug = ch.slug.clone();
+                entry.connect_activate(move |e| {
+                    let raw = e.text().to_string();
+                    ctx_act.editing_channel_id.set(None);
+                    if raw.trim().is_empty() || raw.trim() == old_slug {
+                        ctx_act.rebuild_sidebar();
+                        return;
+                    }
+                    match ctx_act.store.borrow_mut().rename_channel(ch_id, &raw) {
+                        Ok(updated) => {
+                            ctx_act.toast(&format!("Renamed #{old_slug} to #{}", updated.slug));
+                            ctx_act.reload_all();
+                            ctx_act.sync.trigger_sync();
+                        }
+                        Err(err) => {
+                            ctx_act.toast(&format!("Rename failed: {err}"));
+                            ctx_act.rebuild_sidebar();
+                        }
+                    }
+                });
+                let key_ctrl = gtk4::EventControllerKey::new();
+                let ctx_esc = self.clone();
+                key_ctrl.connect_key_pressed(move |_, key, _, _| {
+                    if key == gdk::Key::Escape {
+                        ctx_esc.editing_channel_id.set(None);
+                        ctx_esc.rebuild_sidebar();
+                        return glib::Propagation::Stop;
+                    }
+                    glib::Propagation::Proceed
+                });
+                entry.add_controller(key_ctrl);
+
+                let focus_ctrl = gtk4::EventControllerFocus::new();
+                let ctx_blur = self.clone();
+                focus_ctrl.connect_leave(move |_| {
+                    if ctx_blur.editing_channel_id.get() == Some(ch_id) {
+                        ctx_blur.editing_channel_id.set(None);
+                        let c2 = ctx_blur.clone();
+                        glib::idle_add_local_once(move || c2.rebuild_sidebar());
+                    }
+                });
+                entry.add_controller(focus_ctrl);
+
+                row_box.append(&entry);
+                let e_focus = entry.clone();
+                glib::idle_add_local_once(move || {
+                    e_focus.grab_focus();
+                    e_focus.select_region(0, -1);
+                });
+            } else {
+                let name = gtk4::Label::builder()
+                    .label(&ch.slug)
+                    .xalign(0.0)
+                    .hexpand(true)
+                    .ellipsize(gtk4::pango::EllipsizeMode::End)
+                    .build();
+                let count = gtk4::Label::builder()
+                    .label(ch.image_count.to_string())
+                    .css_classes(["koma-tabular"])
+                    .build();
+                row_box.append(&name);
+                row_box.append(&count);
+            }
 
             let row = gtk4::ListBoxRow::builder().child(&row_box).build();
             row.set_widget_name(&ch.id.to_string());
+
+            // Drag-and-drop channel reordering
+            let drag = gtk4::DragSource::builder()
+                .actions(gdk::DragAction::MOVE)
+                .build();
+            let drag_payload = format!("koma-ch:{}", ch.id);
+            drag.connect_prepare(move |_, _, _| {
+                Some(gdk::ContentProvider::for_value(&drag_payload.to_value()))
+            });
+            row.add_controller(drag);
+
+            let drop = gtk4::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+            let row_enter = row.clone();
+            drop.connect_enter(move |_, _, _| {
+                row_enter.add_css_class("koma-row-drop-target");
+                gdk::DragAction::MOVE
+            });
+            let row_leave = row.clone();
+            drop.connect_leave(move |_| {
+                row_leave.remove_css_class("koma-row-drop-target");
+            });
+            let ctx_drop = self.clone();
+            let target_id = ch.id;
+            let row_drop = row.clone();
+            drop.connect_drop(move |_, val, _, _| {
+                row_drop.remove_css_class("koma-row-drop-target");
+                if let Ok(text) = val.get::<String>()
+                    && let Some(raw_id) = text.strip_prefix("koma-ch:")
+                    && let Ok(src_id) = raw_id.parse::<i64>()
+                {
+                    ctx_drop.reorder_channel_drop(src_id, target_id);
+                    return true;
+                }
+                false
+            });
+            row.add_controller(drop);
 
             let right_click = gtk4::GestureClick::builder().button(3).build();
             let ctx_rc = self.clone();
@@ -229,14 +356,36 @@ impl AppCtx {
     }
 
     fn reload_images(self: &Rc<Self>) {
+        self.reload_images_with_scroll(true);
+    }
+
+    fn reload_images_with_scroll(self: &Rc<Self>, preserve_scroll: bool) {
         let active = self.active_view.get();
+        let sort = self.image_sort.get();
+        let sort_tag = match sort {
+            ImageSort::Newest => "",
+            ImageSort::Oldest => " · Oldest",
+        };
         let (channel_id, title, sub, is_home) = match active {
-            ActiveView::Home => (None, "Home".to_string(), "Recent".to_string(), true),
+            ActiveView::Home => {
+                let total: i64 = self.channels.borrow().iter().map(|c| c.image_count).sum();
+                (
+                    None,
+                    "Home".to_string(),
+                    format!("{}{sort_tag}", format_int(total)),
+                    true,
+                )
+            }
             ActiveView::Channel(id) => {
                 let ch = self.channels.borrow().iter().find(|c| c.id == id).cloned();
                 match ch {
-                    Some(c) => (Some(c.id), c.slug.clone(), c.image_count.to_string(), false),
-                    None => (None, "Home".to_string(), "Recent".to_string(), true),
+                    Some(c) => (
+                        Some(c.id),
+                        c.slug.clone(),
+                        format!("{}{sort_tag}", format_int(c.image_count)),
+                        false,
+                    ),
+                    None => (None, "Home".to_string(), format!("Recent{sort_tag}"), true),
                 }
             }
         };
@@ -246,7 +395,7 @@ impl AppCtx {
         self.title_sub.set_label(&sub);
         self.upload_btn.set_sensitive(!is_home);
 
-        let records = match self.store.borrow().list_images(channel_id) {
+        let records = match self.store.borrow().list_images_sorted(channel_id, sort) {
             Ok(r) => r,
             Err(e) => {
                 self.toast(&format!("Failed to load images: {e}"));
@@ -254,27 +403,49 @@ impl AppCtx {
             }
         };
 
+        let in_lightbox = self.content_stack.visible_child_name().as_deref() == Some("lightbox");
+        if in_lightbox
+            && let Some(lb) = self.lightbox.borrow().as_ref().cloned()
+        {
+            let cur_id = lb.current_record().map(|r| r.id);
+            if !lb.sync_records(records.clone(), cur_id) {
+                self.close_lightbox();
+            }
+        }
+
         let mode = self.view_mode.borrow().clone();
         if let Some(canvas) = self.grid_canvas.borrow().as_ref() {
-            canvas.set_records(records, &mode, is_home);
-            gtk4::prelude::GtkWindowExt::set_focus(&self.window, Some(&canvas.focus_widget()));
+            canvas.set_records(
+                records,
+                &mode,
+                is_home,
+                sort.is_chronological(),
+                preserve_scroll,
+            );
+            if !in_lightbox {
+                gtk4::prelude::GtkWindowExt::set_focus(&self.window, Some(&canvas.focus_widget()));
+            }
         }
         self.update_batch_bar();
     }
 
     fn select_view(self: &Rc<Self>, view: ActiveView) {
-        self.content_stack.set_visible_child_name("gallery");
+        let same_view = self.active_view.get() == view
+            && self.content_stack.visible_child_name().as_deref() == Some("gallery");
+        self.close_lightbox();
         self.active_view.set(view);
         self.select_mode.set(false);
         self.select_toggle.set_active(false);
 
-        let default_mode = match view {
-            ActiveView::Home => "timeline",
-            ActiveView::Channel(_) => "grid",
-        };
-        *self.view_mode.borrow_mut() = default_mode.to_string();
-        self.grid_toggle.set_active(default_mode == "grid");
-        self.timeline_toggle.set_active(default_mode == "timeline");
+        if !same_view {
+            let default_mode = match view {
+                ActiveView::Home => "timeline",
+                ActiveView::Channel(_) => "grid",
+            };
+            *self.view_mode.borrow_mut() = default_mode.to_string();
+            self.grid_toggle.set_active(default_mode == "grid");
+            self.timeline_toggle.set_active(default_mode == "timeline");
+        }
 
         if self.left_split.is_collapsed() {
             self.left_split.set_show_sidebar(false);
@@ -282,7 +453,34 @@ impl AppCtx {
         }
 
         self.rebuild_sidebar();
-        self.reload_images();
+        self.reload_images_with_scroll(same_view);
+    }
+
+    fn step_view(self: &Rc<Self>, delta: i32) {
+        let mut views = vec![ActiveView::Home];
+        for ch in self.channels.borrow().iter() {
+            views.push(ActiveView::Channel(ch.id));
+        }
+        let cur = self.active_view.get();
+        let cur_idx = views.iter().position(|&v| v == cur).unwrap_or(0) as i32;
+        let next_idx = (cur_idx + delta).clamp(0, (views.len() as i32) - 1) as usize;
+        let next = views[next_idx];
+        if next != cur {
+            self.select_view(next);
+        }
+    }
+
+    fn set_inspector_visible(&self, show: bool) {
+        if self.inspector_split.shows_sidebar() == show {
+            return;
+        }
+        if !self.inspector_split.is_collapsed()
+            && let Some(canvas) = self.grid_canvas.borrow().clone()
+        {
+            let delta = if show { -276 } else { 276 };
+            canvas.notify_sidebar_animating(delta);
+        }
+        self.inspector_split.set_show_sidebar(show);
     }
 
     fn toggle_inspector_for(&self, rec: ImageRecord) {
@@ -295,17 +493,17 @@ impl AppCtx {
                 == Some(rec.id);
 
         if already_open_same {
-            self.inspector_split.set_show_sidebar(false);
-            self.inspector_toggle.set_active(false);
+            self.set_inspector_visible(false);
             return;
         }
 
         *self.focused_image.borrow_mut() = Some(rec.clone());
-        if let Some(ins) = self.inspector.borrow().as_ref() {
-            ins.set_image(Some(rec), &self.channels.borrow());
+        let ins = self.inspector.borrow().clone();
+        if let Some(ins) = ins {
+            let chs = self.channels.borrow().clone();
+            ins.set_image(Some(rec), &chs);
         }
-        self.inspector_split.set_show_sidebar(true);
-        self.inspector_toggle.set_active(true);
+        self.set_inspector_visible(true);
     }
 
     fn update_batch_bar(&self) {
@@ -315,7 +513,7 @@ impl AppCtx {
             self.batch_count_label
                 .set_label(&format!("{count} selected"));
         }
-        self.batch_bar.set_visible(show_batch);
+        self.batch_revealer.set_reveal_child(show_batch);
     }
 
     fn target_ids_for_action(&self) -> Vec<i64> {
@@ -471,34 +669,37 @@ impl AppCtx {
 
     fn confirm_delete_selected(self: &Rc<Self>) {
         let ids = self.target_ids_for_action();
+        self.confirm_delete_ids(ids);
+    }
+
+    fn confirm_delete_ids(self: &Rc<Self>, ids: Vec<i64>) {
         if ids.is_empty() {
             return;
         }
-        let alert = adw::AlertDialog::builder()
-            .heading(format!("Delete {} image(s)?", ids.len()))
-            .body("This removes the selected images from koma's managed folder and database.")
-            .build();
-        alert.add_response("cancel", "Cancel");
-        alert.add_response("delete", "Delete");
-        alert.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-        alert.set_default_response(Some("cancel"));
-        alert.set_close_response("cancel");
-
+        let heading = if ids.len() == 1 {
+            "Delete image?".to_string()
+        } else {
+            format!("Delete {} images?", ids.len())
+        };
         let ctx = self.clone();
-        alert.choose(Some(&self.window), gio::Cancellable::NONE, move |resp| {
-            if resp == "delete" {
-                match ctx.store.borrow_mut().delete_images(&ids) {
-                    Ok(n) => {
-                        ctx.select_mode.set(false);
+        present_confirm_dialog(
+            &self.window,
+            &heading,
+            "Removes the selected file(s) from koma and trashes them in Google Drive on next sync.",
+            "Delete",
+            move || match ctx.store.borrow_mut().delete_images(&ids) {
+                Ok(n) => {
+                    ctx.select_mode.set(false);
+                    if ctx.select_toggle.is_active() {
                         ctx.select_toggle.set_active(false);
-                        ctx.toast(&format!("Deleted {n} image(s)"));
-                        ctx.reload_all();
-                        ctx.sync.trigger_sync();
                     }
-                    Err(e) => ctx.toast(&format!("Delete failed: {e}")),
+                    ctx.toast(&format!("Deleted {n} image(s)"));
+                    ctx.reload_all();
+                    ctx.sync.trigger_sync();
                 }
-            }
-        });
+                Err(e) => ctx.toast(&format!("Delete failed: {e}")),
+            },
+        );
     }
 
     fn open_switcher(self: &Rc<Self>, mode: SwitcherMode, explicit_ids: Option<Vec<i64>>) {
@@ -559,7 +760,7 @@ impl AppCtx {
                 } else {
                     self.select_mode.set(false);
                     self.select_toggle.set_active(false);
-                    self.content_stack.set_visible_child_name("gallery");
+                    self.close_lightbox();
                     self.toast(&format!("Moved {} image(s) to #{target_slug}", moved.len()));
                     self.reload_all();
                     self.sync.trigger_sync();
@@ -569,63 +770,42 @@ impl AppCtx {
         }
     }
 
-    fn prompt_create_channel(self: &Rc<Self>) {
-        let entry = gtk4::Entry::builder()
-            .placeholder_text("channel name (e.g. frieren)")
-            .activates_default(true)
-            .build();
-        let alert = adw::AlertDialog::builder()
-            .heading("New Channel")
-            .body("Names are lowercased into clean channel slugs.")
-            .extra_child(&entry)
-            .build();
-        alert.add_response("cancel", "Cancel");
-        alert.add_response("create", "Create");
-        alert.set_response_appearance("create", adw::ResponseAppearance::Suggested);
-        alert.set_default_response(Some("create"));
-        alert.set_close_response("cancel");
-
-        let ctx = self.clone();
-        let entry_read = entry.clone();
-        alert.choose(Some(&self.window), gio::Cancellable::NONE, move |resp| {
-            if resp == "create" {
-                let raw = entry_read.text().to_string();
-                match ctx.store.borrow().create_channel(&raw) {
-                    Ok(ch) => {
-                        ctx.reload_all();
-                        ctx.select_view(ActiveView::Channel(ch.id));
-                        ctx.toast(&format!("Created #{}", ch.slug));
-                        ctx.sync.trigger_sync();
-                    }
-                    Err(e) => ctx.toast(&format!("Create failed: {e}")),
-                }
-            }
+    fn begin_inline_create_channel(&self) {
+        self.new_ch_entry.set_text("");
+        self.new_ch_revealer.set_reveal_child(true);
+        let entry = self.new_ch_entry.clone();
+        glib::idle_add_local_once(move || {
+            entry.grab_focus();
         });
-        entry.grab_focus();
+    }
+
+    fn begin_inline_rename_channel(self: &Rc<Self>, ch_id: i64) {
+        self.editing_channel_id.set(Some(ch_id));
+        self.rebuild_sidebar();
     }
 
     fn show_channel_menu(self: &Rc<Self>, anchor: &gtk4::Widget, x: i32, y: i32, ch: Channel) {
         let popover = gtk4::Popover::new();
+        popover.add_css_class("koma-settings-pop");
+        popover.add_css_class("koma-menu-pop");
+        popover.set_has_arrow(false);
         popover.set_parent(anchor);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x, y, 1, 1)));
 
-        let box_menu = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        box_menu.set_margin_top(6);
-        box_menu.set_margin_bottom(6);
-        box_menu.set_margin_start(6);
-        box_menu.set_margin_end(6);
+        let box_menu = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        box_menu.set_size_request(156, -1);
 
         let rename_btn = gtk4::Button::builder()
-            .label("Rename Channel")
-            .css_classes(["flat"])
+            .label("Rename  (F2)")
+            .css_classes(["flat", "koma-menu-item"])
             .build();
         let merge_btn = gtk4::Button::builder()
-            .label("Merge Into...")
-            .css_classes(["flat"])
+            .label("Merge into...")
+            .css_classes(["flat", "koma-menu-item"])
             .build();
         let delete_btn = gtk4::Button::builder()
-            .label("Delete Channel")
-            .css_classes(["flat", "destructive-action"])
+            .label("Delete channel")
+            .css_classes(["flat", "koma-menu-item", "destructive-action"])
             .build();
 
         box_menu.append(&rename_btn);
@@ -635,10 +815,10 @@ impl AppCtx {
 
         let pop_r = popover.clone();
         let ctx_r = self.clone();
-        let ch_r = ch.clone();
+        let ch_id = ch.id;
         rename_btn.connect_clicked(move |_| {
             pop_r.popdown();
-            ctx_r.prompt_rename_channel(ch_r.clone());
+            ctx_r.begin_inline_rename_channel(ch_id);
         });
 
         let pop_m = popover.clone();
@@ -659,39 +839,6 @@ impl AppCtx {
 
         popover.connect_closed(|p| p.unparent());
         popover.popup();
-    }
-
-    fn prompt_rename_channel(self: &Rc<Self>, ch: Channel) {
-        let entry = gtk4::Entry::builder()
-            .text(&ch.slug)
-            .activates_default(true)
-            .build();
-        let alert = adw::AlertDialog::builder()
-            .heading(format!("Rename #{}", ch.slug))
-            .extra_child(&entry)
-            .build();
-        alert.add_response("cancel", "Cancel");
-        alert.add_response("rename", "Rename");
-        alert.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
-        alert.set_default_response(Some("rename"));
-        alert.set_close_response("cancel");
-
-        let ctx = self.clone();
-        let entry_read = entry.clone();
-        alert.choose(Some(&self.window), gio::Cancellable::NONE, move |resp| {
-            if resp == "rename" {
-                let raw = entry_read.text().to_string();
-                match ctx.store.borrow_mut().rename_channel(ch.id, &raw) {
-                    Ok(updated) => {
-                        ctx.toast(&format!("Renamed #{} to #{}", ch.slug, updated.slug));
-                        ctx.reload_all();
-                        ctx.sync.trigger_sync();
-                    }
-                    Err(e) => ctx.toast(&format!("Rename failed: {e}")),
-                }
-            }
-        });
-        entry.grab_focus();
     }
 
     fn prompt_merge_channel(self: &Rc<Self>, source: Channel) {
@@ -731,43 +878,50 @@ impl AppCtx {
     }
 
     fn prompt_delete_channel(self: &Rc<Self>, ch: Channel) {
-        let alert = adw::AlertDialog::builder()
-            .heading(format!("Delete #{}?", ch.slug))
-            .body(format!(
-                "This permanently deletes #{} and its {} image(s) from koma.",
-                ch.slug, ch.image_count
-            ))
-            .build();
-        alert.add_response("cancel", "Cancel");
-        alert.add_response("delete", "Delete");
-        alert.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-        alert.set_default_response(Some("cancel"));
-        alert.set_close_response("cancel");
-
+        let body = format!(
+            "Removes #{} and its {} image(s) from koma.",
+            ch.slug, ch.image_count
+        );
         let ctx = self.clone();
-        alert.choose(Some(&self.window), gio::Cancellable::NONE, move |resp| {
-            if resp == "delete" {
-                match ctx.store.borrow_mut().delete_channel(ch.id) {
-                    Ok(()) => {
-                        ctx.toast(&format!("Deleted #{}", ch.slug));
-                        ctx.reload_all();
-                        ctx.sync.trigger_sync();
-                    }
-                    Err(e) => ctx.toast(&format!("Delete failed: {e}")),
+        present_confirm_dialog(
+            &self.window,
+            &format!("Delete #{}?", ch.slug),
+            &body,
+            "Delete",
+            move || match ctx.store.borrow_mut().delete_channel(ch.id) {
+                Ok(()) => {
+                    ctx.toast(&format!("Deleted #{}", ch.slug));
+                    ctx.reload_all();
+                    ctx.sync.trigger_sync();
                 }
-            }
-        });
+                Err(e) => ctx.toast(&format!("Delete failed: {e}")),
+            },
+        );
+    }
+
+    fn close_lightbox(&self) {
+        self.content_stack.set_visible_child_name("gallery");
+        let ins = self.inspector.borrow().clone();
+        if let Some(ins) = ins {
+            ins.set_lightbox_mode(false);
+        }
     }
 
     fn open_lightbox_at(&self, idx: usize) {
-        let Some(canvas) = self.grid_canvas.borrow().as_ref().cloned() else {
+        let Some(canvas) = self.grid_canvas.borrow().clone() else {
             return;
         };
         let recs = canvas.records_snapshot();
         if recs.is_empty() {
             return;
         }
-        if let Some(lb) = self.lightbox.borrow().as_ref() {
+        let ins = self.inspector.borrow().clone();
+        if let Some(ins) = ins {
+            ins.set_lightbox_mode(true);
+        }
+        let lb = self.lightbox.borrow().clone();
+        if let Some(lb) = lb {
+            lb.set_inspector_active(self.inspector_split.shows_sidebar());
             lb.open(recs, idx);
             self.content_stack.set_visible_child_name("lightbox");
         }
@@ -795,15 +949,19 @@ pub fn build_ui(app: &adw::Application) {
         .and_then(Store::open)
         .expect("failed to open koma store");
     let root_dir = store.root().to_path_buf();
-    let initial_channels = store.list_channels().expect("failed to list channels");
-    let initial_view = initial_channels
-        .first()
-        .map(|c| ActiveView::Channel(c.id))
-        .unwrap_or(ActiveView::Home);
-    let initial_mode = match initial_view {
-        ActiveView::Home => "timeline",
-        ActiveView::Channel(_) => "grid",
-    };
+    let saved_channel_sort = store
+        .get_setting("channel_sort")
+        .map(|s| ChannelSort::parse(&s))
+        .unwrap_or(ChannelSort::Count);
+    let saved_image_sort = store
+        .get_setting("image_sort")
+        .map(|s| ImageSort::parse(&s))
+        .unwrap_or(ImageSort::Newest);
+    let initial_channels = store
+        .list_channels_sorted(saved_channel_sort)
+        .expect("failed to list channels");
+    let initial_view = ActiveView::Home;
+    let initial_mode = "timeline";
 
     let store = Rc::new(RefCell::new(store));
     let sync = SyncHandle::spawn(root_dir.clone());
@@ -918,14 +1076,46 @@ pub fn build_ui(app: &adw::Application) {
         .hexpand(true)
         .css_classes(["koma-section-label"])
         .build();
+    let ch_sort_btn = gtk4::Button::builder()
+        .icon_name("view-sort-descending-symbolic")
+        .css_classes(["flat", "koma-ghost-btn"])
+        .tooltip_text("Sort channels (or drag to reorder)")
+        .build();
     let new_ch_btn = gtk4::Button::builder()
         .icon_name("list-add-symbolic")
         .css_classes(["flat", "koma-ghost-btn"])
         .tooltip_text("New channel")
         .build();
     ch_header.append(&ch_label);
+    ch_header.append(&ch_sort_btn);
     ch_header.append(&new_ch_btn);
     sidebar.append(&ch_header);
+
+    // Inline channel creation row (slides down on +, no modal popup)
+    let new_ch_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 5);
+    new_ch_row.set_margin_start(14);
+    new_ch_row.set_margin_end(12);
+    new_ch_row.set_margin_top(2);
+    new_ch_row.set_margin_bottom(6);
+    let new_ch_hash = gtk4::Label::builder()
+        .label("#")
+        .css_classes(["koma-channel-hash"])
+        .build();
+    let new_ch_entry = gtk4::Entry::builder()
+        .placeholder_text("channel-name")
+        .hexpand(true)
+        .css_classes(["koma-inline-entry"])
+        .build();
+    new_ch_row.append(&new_ch_hash);
+    new_ch_row.append(&new_ch_entry);
+
+    let new_ch_revealer = gtk4::Revealer::builder()
+        .transition_type(gtk4::RevealerTransitionType::SlideDown)
+        .transition_duration(140)
+        .reveal_child(false)
+        .child(&new_ch_row)
+        .build();
+    sidebar.append(&new_ch_revealer);
 
     let channel_list = gtk4::ListBox::builder()
         .selection_mode(gtk4::SelectionMode::Single)
@@ -1004,6 +1194,12 @@ pub fn build_ui(app: &adw::Application) {
     mode_box.append(&grid_toggle);
     mode_box.append(&timeline_toggle);
 
+    let img_sort_btn = gtk4::Button::builder()
+        .icon_name("view-sort-descending-symbolic")
+        .tooltip_text("Sort images")
+        .css_classes(["flat", "koma-ghost-btn"])
+        .build();
+
     let vsep1 = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     vsep1.add_css_class("koma-vsep");
     vsep1.set_valign(gtk4::Align::Center);
@@ -1042,6 +1238,7 @@ pub fn build_ui(app: &adw::Application) {
     topbar.append(&sidebar_toggle_btn);
     topbar.append(&title_row);
     topbar.append(&mode_box);
+    topbar.append(&img_sort_btn);
     topbar.append(&vsep1);
     topbar.append(&size_scale);
     topbar.append(&vsep2);
@@ -1054,12 +1251,9 @@ pub fn build_ui(app: &adw::Application) {
     topbar_handle.set_hexpand(true);
     topbar_handle.set_child(Some(&topbar));
 
-    // === MULTI-SELECT FLOATING BAR (ONLY VISIBLE WHEN MULTI-SELECTING) ===
+    // === MULTI-SELECT FLOATING BAR (SMOOTH SLIDE-UP REVEALER) ===
     let batch_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     batch_bar.add_css_class("koma-floating-dock");
-    batch_bar.set_halign(gtk4::Align::Center);
-    batch_bar.set_valign(gtk4::Align::End);
-    batch_bar.set_visible(false);
 
     let batch_count_label = gtk4::Label::builder()
         .css_classes(["koma-inspector-filename"])
@@ -1093,8 +1287,16 @@ pub fn build_ui(app: &adw::Application) {
     batch_bar.append(&batch_del_btn);
     batch_bar.append(&batch_esc_btn);
 
-    // === MAIN LAYOUT ASSEMBLY (floating glass islands + sticky overlay topbar) ===
-    // 0px-height width sensor triggers justified row re-packing on resize or Inspector toggle.
+    let batch_revealer = gtk4::Revealer::builder()
+        .transition_type(gtk4::RevealerTransitionType::SlideUp)
+        .transition_duration(160)
+        .reveal_child(false)
+        .halign(gtk4::Align::Center)
+        .valign(gtk4::Align::End)
+        .child(&batch_bar)
+        .build();
+
+    // === MAIN LAYOUT ASSEMBLY (floating glass islands + shared right Inspector for Gallery & Lightbox) ===
     let width_sensor = gtk4::DrawingArea::new();
     width_sensor.set_content_height(0);
     width_sensor.set_hexpand(true);
@@ -1103,7 +1305,7 @@ pub fn build_ui(app: &adw::Application) {
     canvas_overlay.set_vexpand(true);
     canvas_overlay.set_hexpand(true);
     canvas_overlay.add_overlay(&topbar_handle);
-    canvas_overlay.add_overlay(&batch_bar);
+    canvas_overlay.add_overlay(&batch_revealer);
 
     let canvas_col = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     canvas_col.add_css_class("koma-gallery-island");
@@ -1113,6 +1315,15 @@ pub fn build_ui(app: &adw::Application) {
     canvas_col.append(&width_sensor);
     canvas_col.append(&canvas_overlay);
 
+    // Lightbox and Gallery share the right Inspector sidebar while keeping the left channel sidebar open.
+    let content_stack = gtk4::Stack::new();
+    content_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+    content_stack.set_transition_duration(180);
+    content_stack.set_hexpand(true);
+    content_stack.set_vexpand(true);
+    content_stack.add_named(&canvas_col, Some("gallery"));
+
+    // Pinned right Inspector resizes the gallery cleanly so topbar controls (Select/Zoom) stay visible.
     let inspector_split = adw::OverlaySplitView::builder()
         .sidebar_position(gtk4::PackType::End)
         .pin_sidebar(true)
@@ -1121,14 +1332,8 @@ pub fn build_ui(app: &adw::Application) {
         .max_sidebar_width(288.0)
         .hexpand(true)
         .vexpand(true)
-        .content(&canvas_col)
+        .content(&content_stack)
         .build();
-
-    // Lightbox lives inside the right pane so the left channel sidebar remains visible.
-    let content_stack = gtk4::Stack::new();
-    content_stack.set_hexpand(true);
-    content_stack.set_vexpand(true);
-    content_stack.add_named(&inspector_split, Some("gallery"));
 
     let left_split = adw::OverlaySplitView::builder()
         .sidebar_position(gtk4::PackType::Start)
@@ -1138,7 +1343,7 @@ pub fn build_ui(app: &adw::Application) {
         .max_sidebar_width(212.0)
         .sidebar_width_fraction(0.0)
         .sidebar(&sidebar)
-        .content(&content_stack)
+        .content(&inspector_split)
         .build();
 
     let toast_overlay = adw::ToastOverlay::new();
@@ -1158,7 +1363,7 @@ pub fn build_ui(app: &adw::Application) {
         .unwrap_or_else(|| "obsidian".to_string());
     apply_theme_class(&window, &saved_theme);
 
-    // Responsive breakpoints for narrow niri splits.
+    // Responsive breakpoint for narrow niri splits.
     let bp_narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
         adw::BreakpointConditionLengthType::MaxWidth,
         760.0,
@@ -1177,18 +1382,24 @@ pub fn build_ui(app: &adw::Application) {
         sync_status: RefCell::new(SyncStatus::LocalOnly),
         thumb_cache: thumb_cache.clone(),
         channels: RefCell::new(initial_channels),
+        channel_sort: Cell::new(saved_channel_sort),
+        image_sort: Cell::new(saved_image_sort),
         active_view: Cell::new(initial_view),
         view_mode: RefCell::new(initial_mode.to_string()),
         selected_images: RefCell::new(Vec::new()),
         focused_image: RefCell::new(None),
         select_mode: Cell::new(false),
         suppress_sidebar_select: Cell::new(false),
+        suppress_inspector_toggle: Cell::new(false),
         left_split: left_split.clone(),
         sidebar_toggle_btn: sidebar_toggle_btn.clone(),
         sync_pill,
         sync_dot,
         sync_label,
         home_row_btn: home_row_btn.clone(),
+        new_ch_revealer: new_ch_revealer.clone(),
+        new_ch_entry: new_ch_entry.clone(),
+        editing_channel_id: Cell::new(None),
         channel_list: channel_list.clone(),
         footer_count,
         title_hash,
@@ -1199,8 +1410,7 @@ pub fn build_ui(app: &adw::Application) {
         timeline_toggle: timeline_toggle.clone(),
         select_toggle: select_toggle.clone(),
         inspector_split: inspector_split.clone(),
-        inspector_toggle: inspector_toggle.clone(),
-        batch_bar,
+        batch_revealer,
         batch_count_label,
         _theme_monitor: theme_monitor,
         grid_canvas: RefCell::new(None),
@@ -1250,10 +1460,7 @@ pub fn build_ui(app: &adw::Application) {
         thumb_cache.clone(),
         {
             let ctx = ctx.clone();
-            move || {
-                ctx.inspector_split.set_show_sidebar(false);
-                ctx.inspector_toggle.set_active(false);
-            }
+            move || ctx.set_inspector_visible(false)
         },
         {
             let ctx = ctx.clone();
@@ -1290,18 +1497,22 @@ pub fn build_ui(app: &adw::Application) {
             let ctx = ctx.clone();
             move |image_id, target_cid| ctx.move_images_to(vec![image_id], target_cid)
         },
+        {
+            let ctx = ctx.clone();
+            move |rec| ctx.confirm_delete_ids(vec![rec.id])
+        },
     );
     inspector_split.set_sidebar(Some(&inspector_pane.root_widget));
     *ctx.inspector.borrow_mut() = Some(inspector_pane);
 
-    // Build Lightbox inside right content_stack so sidebar stays open.
+    // Build Lightbox inside content_stack so both left sidebar and right Inspector work in Lightbox.
     let lightbox_view = LightboxView::new(
         root_dir,
         thumb_cache,
         {
             let ctx = ctx.clone();
             move || {
-                ctx.content_stack.set_visible_child_name("gallery");
+                ctx.close_lightbox();
                 if let Some(canvas) = ctx.grid_canvas.borrow().as_ref() {
                     canvas.focus_canvas();
                 }
@@ -1315,14 +1526,51 @@ pub fn build_ui(app: &adw::Application) {
             let ctx = ctx.clone();
             move |rec| ctx.open_switcher(SwitcherMode::MoveSelected, Some(vec![rec.id]))
         },
+        {
+            let ctx = ctx.clone();
+            move |rec| ctx.confirm_delete_ids(vec![rec.id])
+        },
+        {
+            let ctx = ctx.clone();
+            move |show| {
+                if show {
+                    let ins = ctx.inspector.borrow().clone();
+                    if let Some(ins) = ins {
+                        let rec = ctx.focused_image.borrow().clone();
+                        let chs = ctx.channels.borrow().clone();
+                        ins.set_image(rec, &chs);
+                    }
+                }
+                ctx.set_inspector_visible(show);
+            }
+        },
+        {
+            let ctx = ctx.clone();
+            move |rec| {
+                *ctx.focused_image.borrow_mut() = rec.clone();
+                if let Some(ins) = ctx.inspector.borrow().as_ref() {
+                    ins.set_image(rec, &ctx.channels.borrow());
+                }
+            }
+        },
     );
     content_stack.add_named(&lightbox_view.root_widget, Some("lightbox"));
     *ctx.lightbox.borrow_mut() = Some(lightbox_view);
 
     // === SIGNAL WIRING ===
     let left_ref = left_split.clone();
+    let c_left = ctx.clone();
     sidebar_toggle_btn.connect_toggled(move |btn| {
-        left_ref.set_show_sidebar(btn.is_active());
+        let show = btn.is_active();
+        if left_ref.shows_sidebar() == show {
+            return;
+        }
+        if !left_ref.is_collapsed()
+            && let Some(canvas) = c_left.grid_canvas.borrow().clone()
+        {
+            canvas.notify_sidebar_animating(if show { -212 } else { 212 });
+        }
+        left_ref.set_show_sidebar(show);
     });
     let st_btn = sidebar_toggle_btn.clone();
     left_split.connect_collapsed_notify(move |split| {
@@ -1344,7 +1592,47 @@ pub fn build_ui(app: &adw::Application) {
     home_row_btn.connect_clicked(move |_| c.select_view(ActiveView::Home));
 
     let c = ctx.clone();
-    new_ch_btn.connect_clicked(move |_| c.prompt_create_channel());
+    let ch_sort_anchor = ch_sort_btn.clone();
+    ch_sort_btn.connect_clicked(move |_| {
+        show_channel_sort_popover(&ch_sort_anchor, &c);
+    });
+
+    let c = ctx.clone();
+    new_ch_btn.connect_clicked(move |_| c.begin_inline_create_channel());
+
+    let c_nc = ctx.clone();
+    new_ch_entry.connect_activate(move |entry| {
+        let raw = entry.text().to_string();
+        c_nc.new_ch_revealer.set_reveal_child(false);
+        if raw.trim().is_empty() {
+            return;
+        }
+        match c_nc.store.borrow().create_channel(&raw) {
+            Ok(ch) => {
+                c_nc.reload_all();
+                c_nc.select_view(ActiveView::Channel(ch.id));
+                c_nc.toast(&format!("Created #{}", ch.slug));
+                c_nc.sync.trigger_sync();
+            }
+            Err(e) => c_nc.toast(&format!("Create failed: {e}")),
+        }
+    });
+    let nc_key = gtk4::EventControllerKey::new();
+    let rev_esc = new_ch_revealer.clone();
+    nc_key.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape {
+            rev_esc.set_reveal_child(false);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    new_ch_entry.add_controller(nc_key);
+    let nc_focus = gtk4::EventControllerFocus::new();
+    let rev_blur = new_ch_revealer;
+    nc_focus.connect_leave(move |_| {
+        rev_blur.set_reveal_child(false);
+    });
+    new_ch_entry.add_controller(nc_focus);
 
     let c = ctx.clone();
     channel_list.connect_row_selected(move |_, row| {
@@ -1387,6 +1675,12 @@ pub fn build_ui(app: &adw::Application) {
     });
 
     let c = ctx.clone();
+    let img_sort_anchor = img_sort_btn.clone();
+    img_sort_btn.connect_clicked(move |_| {
+        show_image_sort_popover(&img_sort_anchor, &c);
+    });
+
+    let c = ctx.clone();
     size_scale.connect_value_changed(move |scale| {
         if let Some(canvas) = c.grid_canvas.borrow().as_ref() {
             canvas.set_zoom_level(scale.value().round() as i32);
@@ -1408,19 +1702,31 @@ pub fn build_ui(app: &adw::Application) {
 
     let c_ins = ctx.clone();
     inspector_toggle.connect_toggled(move |btn| {
-        let show = btn.is_active();
-        if show
-            && let Some(ins) = c_ins.inspector.borrow().as_ref()
-        {
-            ins.set_image(c_ins.focused_image.borrow().clone(), &c_ins.channels.borrow());
+        if c_ins.suppress_inspector_toggle.get() {
+            return;
         }
-        c_ins.inspector_split.set_show_sidebar(show);
+        let show = btn.is_active();
+        if show {
+            let ins = c_ins.inspector.borrow().clone();
+            if let Some(ins) = ins {
+                let rec = c_ins.focused_image.borrow().clone();
+                let chs = c_ins.channels.borrow().clone();
+                ins.set_image(rec, &chs);
+            }
+        }
+        c_ins.set_inspector_visible(show);
     });
     let ins_btn = inspector_toggle.clone();
+    let c_ins_sync = ctx.clone();
     inspector_split.connect_show_sidebar_notify(move |split| {
         let showing = split.shows_sidebar();
+        c_ins_sync.suppress_inspector_toggle.set(true);
         if ins_btn.is_active() != showing {
             ins_btn.set_active(showing);
+        }
+        c_ins_sync.suppress_inspector_toggle.set(false);
+        if let Some(lb) = c_ins_sync.lightbox.borrow().as_ref() {
+            lb.set_inspector_active(showing);
         }
     });
 
@@ -1459,32 +1765,82 @@ pub fn build_ui(app: &adw::Application) {
         c.update_batch_bar();
     });
 
-    // Global keyboard shortcuts (Ctrl+K, Ctrl+V, Ctrl+A, Space, Esc, Lightbox arrows)
+    // Global keyboard shortcuts (Ctrl+K, Ctrl+V, Ctrl+A, Ctrl+/-/0, Space, Esc, Lightbox arrows)
     let key_ctrl = gtk4::EventControllerKey::new();
     key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Capture);
     let c = ctx.clone();
+    let zoom_scale = size_scale;
     key_ctrl.connect_key_pressed(move |_, key, _, mods| {
-        if c.content_stack.visible_child_name().as_deref() == Some("lightbox") {
+        let focused_widget = gtk4::prelude::GtkWindowExt::focus(&c.window);
+        let editing_text = focused_widget
+            .as_ref()
+            .is_some_and(|w| w.is::<gtk4::Editable>() || w.is::<gtk4::Text>());
+
+        if !editing_text && key == gdk::Key::F2 {
+            let in_sidebar_list = focused_widget
+                .as_ref()
+                .is_some_and(|w| w == &c.channel_list || c.channel_list.is_ancestor(w));
+            if in_sidebar_list {
+                if let ActiveView::Channel(cid) = c.active_view.get() {
+                    c.begin_inline_rename_channel(cid);
+                    return glib::Propagation::Stop;
+                }
+            }
+            let focused_rec = c.focused_image.borrow().clone();
+            if let Some(rec) = focused_rec {
+                let ins = c.inspector.borrow().clone();
+                if let Some(ins) = ins {
+                    let channels = c.channels.borrow().clone();
+                    ins.set_image(Some(rec), &channels);
+                    c.set_inspector_visible(true);
+                    ins.begin_inline_rename();
+                    return glib::Propagation::Stop;
+                }
+            } else if let ActiveView::Channel(cid) = c.active_view.get() {
+                c.begin_inline_rename_channel(cid);
+                return glib::Propagation::Stop;
+            }
+        }
+
+        if c.content_stack.visible_child_name().as_deref() == Some("lightbox") && !editing_text {
             match key {
-                gdk::Key::Escape => {
-                    c.content_stack.set_visible_child_name("gallery");
+                gdk::Key::Escape | gdk::Key::space => {
+                    c.close_lightbox();
+                    if let Some(canvas) = c.grid_canvas.borrow().as_ref() {
+                        canvas.focus_canvas();
+                    }
                     return glib::Propagation::Stop;
                 }
                 gdk::Key::Left => {
-                    if let Some(lb) = c.lightbox.borrow().as_ref() {
+                    let lb = c.lightbox.borrow().clone();
+                    if let Some(lb) = lb {
                         lb.step(-1);
                     }
                     return glib::Propagation::Stop;
                 }
                 gdk::Key::Right => {
-                    if let Some(lb) = c.lightbox.borrow().as_ref() {
+                    let lb = c.lightbox.borrow().clone();
+                    if let Some(lb) = lb {
                         lb.step(1);
                     }
                     return glib::Propagation::Stop;
                 }
                 gdk::Key::z | gdk::Key::Z => {
-                    if let Some(lb) = c.lightbox.borrow().as_ref() {
+                    let lb = c.lightbox.borrow().clone();
+                    if let Some(lb) = lb {
                         lb.toggle_zoom();
+                    }
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Delete => {
+                    let rec_id = c
+                        .lightbox
+                        .borrow()
+                        .as_ref()
+                        .and_then(|lb| lb.current_record())
+                        .map(|r| r.id);
+                    if let Some(id) = rec_id {
+                        c.confirm_delete_ids(vec![id]);
                     }
                     return glib::Propagation::Stop;
                 }
@@ -1492,12 +1848,40 @@ pub fn build_ui(app: &adw::Application) {
             }
         }
 
-        let editing_text = gtk4::prelude::GtkWindowExt::focus(&c.window)
-            .is_some_and(|w| w.is::<gtk4::Editable>() || w.is::<gtk4::Text>());
-
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl && matches!(key, gdk::Key::k | gdk::Key::K) {
             c.open_switcher(SwitcherMode::Jump, None);
+            return glib::Propagation::Stop;
+        }
+        if !editing_text && ctrl {
+            match key {
+                gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
+                    let next = (zoom_scale.value().round() + 1.0).clamp(1.0, 7.0);
+                    zoom_scale.set_value(next);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => {
+                    let next = (zoom_scale.value().round() - 1.0).clamp(1.0, 7.0);
+                    zoom_scale.set_value(next);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::_0 | gdk::Key::KP_0 => {
+                    zoom_scale.set_value(4.0);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Up => {
+                    c.step_view(-1);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Down => {
+                    c.step_view(1);
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+        }
+        if !editing_text && key == gdk::Key::Delete {
+            c.confirm_delete_selected();
             return glib::Propagation::Stop;
         }
         if !editing_text && ctrl && matches!(key, gdk::Key::v | gdk::Key::V) {
@@ -1505,13 +1889,18 @@ pub fn build_ui(app: &adw::Application) {
             return glib::Propagation::Stop;
         }
         if !editing_text && ctrl && matches!(key, gdk::Key::a | gdk::Key::A) {
-            if let Some(canvas) = c.grid_canvas.borrow().as_ref() {
+            let canvas = c.grid_canvas.borrow().clone();
+            if let Some(canvas) = canvas {
                 canvas.select_all();
             }
             return glib::Propagation::Stop;
         }
-        if !editing_text && key == gdk::Key::space {
-            if let Some(rec) = c.focused_image.borrow().clone() {
+        if !editing_text
+            && key == gdk::Key::space
+            && c.content_stack.visible_child_name().as_deref() == Some("gallery")
+        {
+            let rec = c.focused_image.borrow().clone();
+            if let Some(rec) = rec {
                 let idx = c
                     .grid_canvas
                     .borrow()
@@ -1520,6 +1909,37 @@ pub fn build_ui(app: &adw::Application) {
                     .unwrap_or(0);
                 c.open_lightbox_at(idx);
                 return glib::Propagation::Stop;
+            }
+        }
+        let in_sidebar_list = focused_widget
+            .as_ref()
+            .is_some_and(|w| w == &c.channel_list || c.channel_list.is_ancestor(w));
+        if !editing_text
+            && !in_sidebar_list
+            && c.content_stack.visible_child_name().as_deref() == Some("gallery")
+        {
+            if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) {
+                let rec = c.focused_image.borrow().clone();
+                if let Some(rec) = rec {
+                    c.toggle_inspector_for(rec);
+                    return glib::Propagation::Stop;
+                }
+            }
+            let dir = match key {
+                gdk::Key::Left => Some(NavDir::Left),
+                gdk::Key::Right => Some(NavDir::Right),
+                gdk::Key::Up => Some(NavDir::Up),
+                gdk::Key::Down => Some(NavDir::Down),
+                _ => None,
+            };
+            if let Some(dir) = dir {
+                let extend = mods.contains(gdk::ModifierType::SHIFT_MASK);
+                let canvas = c.grid_canvas.borrow().clone();
+                if let Some(canvas) = canvas
+                    && canvas.move_selection(dir, extend)
+                {
+                    return glib::Propagation::Stop;
+                }
             }
         }
         if key == gdk::Key::Escape {
@@ -1532,8 +1952,7 @@ pub fn build_ui(app: &adw::Application) {
                 c.update_batch_bar();
                 return glib::Propagation::Stop;
             } else if c.inspector_split.shows_sidebar() {
-                c.inspector_split.set_show_sidebar(false);
-                c.inspector_toggle.set_active(false);
+                c.set_inspector_visible(false);
                 return glib::Propagation::Stop;
             }
         }
@@ -1883,7 +2302,7 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
         .css_classes(["koma-section-label"])
         .build();
     let keys_body = gtk4::Label::builder()
-        .label("Ctrl+V paste · Ctrl+K jump\nCtrl+A select all · Space lightbox\nDouble-click toggle Inspector")
+        .label("Ctrl+V paste · Ctrl+K jump · Ctrl+↑/↓ channels\nCtrl+A select all · Ctrl +/- zoom · F2 rename\nEnter inspect · Space lightbox · Del delete")
         .xalign(0.0)
         .css_classes(["koma-tabular"])
         .build();
@@ -1893,6 +2312,209 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
     popover.set_child(Some(&root));
     popover.connect_closed(|p| p.unparent());
     popover.popup();
+}
+
+fn show_channel_sort_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
+    let popover = gtk4::Popover::new();
+    popover.add_css_class("koma-settings-pop");
+    popover.add_css_class("koma-menu-pop");
+    popover.set_has_arrow(false);
+    popover.set_parent(anchor);
+    popover.set_position(gtk4::PositionType::Bottom);
+
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    root.set_size_request(176, -1);
+    let heading = gtk4::Label::builder()
+        .label("SORT CHANNELS")
+        .xalign(0.0)
+        .margin_start(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .css_classes(["koma-section-label"])
+        .build();
+    root.append(&heading);
+
+    let current = ctx.channel_sort.get();
+    let options = [
+        (ChannelSort::Count, "Most images"),
+        (ChannelSort::Name, "Name (A to Z)"),
+        (ChannelSort::Recent, "Recently updated"),
+        (ChannelSort::Custom, "Custom (drag)"),
+    ];
+    for (opt, label) in options {
+        let lbl = gtk4::Label::builder()
+            .label(if opt == current {
+                format!("✓  {label}")
+            } else {
+                format!("    {label}")
+            })
+            .xalign(0.0)
+            .build();
+        let btn = gtk4::Button::builder()
+            .child(&lbl)
+            .css_classes(["flat", "koma-menu-item"])
+            .build();
+        let ctx_s = ctx.clone();
+        let pop_s = popover.clone();
+        btn.connect_clicked(move |_| {
+            pop_s.popdown();
+            ctx_s.channel_sort.set(opt);
+            let _ = ctx_s
+                .store
+                .borrow()
+                .set_setting("channel_sort", opt.as_str());
+            ctx_s.reload_all();
+        });
+        root.append(&btn);
+    }
+
+    popover.set_child(Some(&root));
+    popover.connect_closed(|p| p.unparent());
+    popover.popup();
+}
+
+fn show_image_sort_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
+    let popover = gtk4::Popover::new();
+    popover.add_css_class("koma-settings-pop");
+    popover.add_css_class("koma-menu-pop");
+    popover.set_has_arrow(false);
+    popover.set_parent(anchor);
+    popover.set_position(gtk4::PositionType::Bottom);
+
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    root.set_size_request(172, -1);
+    let heading = gtk4::Label::builder()
+        .label("SORT IMAGES")
+        .xalign(0.0)
+        .margin_start(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .css_classes(["koma-section-label"])
+        .build();
+    root.append(&heading);
+
+    let current = ctx.image_sort.get();
+    let options = [
+        (ImageSort::Newest, "Newest first"),
+        (ImageSort::Oldest, "Oldest first"),
+    ];
+    for (opt, label) in options {
+        let lbl = gtk4::Label::builder()
+            .label(if opt == current {
+                format!("✓  {label}")
+            } else {
+                format!("    {label}")
+            })
+            .xalign(0.0)
+            .build();
+        let btn = gtk4::Button::builder()
+            .child(&lbl)
+            .css_classes(["flat", "koma-menu-item"])
+            .build();
+        let ctx_s = ctx.clone();
+        let pop_s = popover.clone();
+        btn.connect_clicked(move |_| {
+            pop_s.popdown();
+            ctx_s.image_sort.set(opt);
+            let _ = ctx_s.store.borrow().set_setting("image_sort", opt.as_str());
+            ctx_s.reload_images_with_scroll(false);
+        });
+        root.append(&btn);
+    }
+
+    popover.set_child(Some(&root));
+    popover.connect_closed(|p| p.unparent());
+    popover.popup();
+}
+
+fn present_confirm_dialog(
+    parent: &adw::ApplicationWindow,
+    heading: &str,
+    body: &str,
+    confirm_label: &str,
+    on_confirm: impl Fn() + 'static,
+) {
+    let dialog = adw::Dialog::builder()
+        .content_width(340)
+        .follows_content_size(true)
+        .build();
+
+    let box_root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    box_root.add_css_class("koma-dialog");
+
+    let title = gtk4::Label::builder()
+        .label(heading)
+        .xalign(0.0)
+        .css_classes(["koma-channel-title"])
+        .build();
+    let desc = gtk4::Label::builder()
+        .label(body)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["koma-dialog-body"])
+        .build();
+
+    let btn_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    btn_row.set_halign(gtk4::Align::End);
+    btn_row.set_margin_top(4);
+
+    let cancel_btn = gtk4::Button::builder()
+        .label("Cancel")
+        .css_classes(["flat", "koma-action-subtle"])
+        .build();
+    let confirm_btn = gtk4::Button::builder()
+        .label(confirm_label)
+        .css_classes(["flat", "koma-danger-btn"])
+        .build();
+
+    btn_row.append(&cancel_btn);
+    btn_row.append(&confirm_btn);
+
+    box_root.append(&title);
+    box_root.append(&desc);
+    box_root.append(&btn_row);
+    dialog.set_child(Some(&box_root));
+
+    let d_cancel = dialog.clone();
+    cancel_btn.connect_clicked(move |_| {
+        d_cancel.close();
+    });
+
+    let confirmed = Rc::new(Cell::new(false));
+    let fire_confirm: Rc<dyn Fn()> = Rc::new(move || {
+        if !confirmed.replace(true) {
+            on_confirm();
+        }
+    });
+
+    let d_ok = dialog.clone();
+    let ok_cb = fire_confirm.clone();
+    confirm_btn.connect_clicked(move |_| {
+        d_ok.close();
+        ok_cb();
+    });
+
+    let key_ctrl = gtk4::EventControllerKey::new();
+    let d_key = dialog.clone();
+    key_ctrl.connect_key_pressed(move |_, key, _, _| match key {
+        gdk::Key::Escape => {
+            d_key.close();
+            glib::Propagation::Stop
+        }
+        gdk::Key::Return | gdk::Key::KP_Enter => {
+            d_key.close();
+            fire_confirm();
+            glib::Propagation::Stop
+        }
+        _ => glib::Propagation::Proceed,
+    });
+    box_root.add_controller(key_ctrl);
+
+    dialog.present(Some(parent));
+    let focus_btn = confirm_btn.clone();
+    glib::idle_add_local_once(move || {
+        focus_btn.grab_focus();
+    });
 }
 
 fn format_int(n: i64) -> String {

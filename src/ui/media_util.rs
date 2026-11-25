@@ -12,7 +12,7 @@ use gtk4::{gdk, gio, glib};
 
 use crate::media;
 
-const THUMB_CACHE_LIMIT: usize = 160;
+const THUMB_CACHE_LIMIT: usize = 260;
 const WORKER_THREADS: usize = 3;
 
 pub struct ThumbCache {
@@ -194,6 +194,10 @@ impl AsyncThumbLoader {
             }
         }
     }
+}
+
+pub fn decode_full_rgba(path: &Path) -> Option<(i32, i32, Vec<u8>)> {
+    decode_fast_rgba(path)
 }
 
 /// Fast path uses system libwebp SIMD decoder for `.webp` thumbnails (~10x faster than image-webp).

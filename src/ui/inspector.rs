@@ -16,6 +16,7 @@ pub struct InspectorPane {
     filename_label: gtk4::Label,
     filename_entry: gtk4::Entry,
     filename_stack: gtk4::Stack,
+    open_btn: gtk4::Button,
     channel_val: gtk4::Label,
     size_val: gtk4::Label,
     added_val: gtk4::Label,
@@ -38,6 +39,7 @@ impl InspectorPane {
         on_move_dialog: impl Fn(ImageRecord) + 'static,
         on_rename: impl Fn(i64, String) + 'static,
         on_quick_move: impl Fn(i64, i64) + 'static,
+        on_delete: impl Fn(ImageRecord) + 'static,
     ) -> Rc<Self> {
         let root_widget = gtk4::Box::new(gtk4::Orientation::Vertical, 10);
         root_widget.add_css_class("koma-inspector");
@@ -99,7 +101,10 @@ impl InspectorPane {
         view_row.append(&filename_label);
         view_row.append(&edit_btn);
 
-        let filename_entry = gtk4::Entry::builder().hexpand(true).build();
+        let filename_entry = gtk4::Entry::builder()
+            .hexpand(true)
+            .css_classes(["koma-inline-entry"])
+            .build();
         let filename_stack = gtk4::Stack::new();
         filename_stack.add_named(&view_row, Some("view"));
         filename_stack.add_named(&filename_entry, Some("edit"));
@@ -141,10 +146,19 @@ impl InspectorPane {
             .hexpand(true)
             .css_classes(["flat", "koma-action-subtle"])
             .build();
+        let delete_btn = gtk4::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Delete image")
+            .css_classes(["flat", "koma-action-subtle", "destructive-action"])
+            .build();
+
+        let secondary_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        secondary_row.append(&move_btn);
+        secondary_row.append(&delete_btn);
 
         let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         actions.append(&primary_row);
-        actions.append(&move_btn);
+        actions.append(&secondary_row);
         content_box.append(&actions);
 
         let meta_grid = gtk4::Grid::builder()
@@ -190,7 +204,8 @@ impl InspectorPane {
         let stack_edit = filename_stack.clone();
         let entry_edit = filename_entry.clone();
         edit_btn.connect_clicked(move |_| {
-            if let Some(rec) = cur_edit.borrow().as_ref() {
+            let rec = cur_edit.borrow().clone();
+            if let Some(rec) = rec {
                 entry_edit.set_text(&rec.filename);
                 stack_edit.set_visible_child_name("edit");
                 entry_edit.grab_focus();
@@ -203,8 +218,9 @@ impl InspectorPane {
         filename_entry.connect_activate(move |entry| {
             let text = entry.text().to_string();
             stack_act.set_visible_child_name("view");
-            if let Some(rec) = cur_act.borrow().as_ref() {
-                rename_cb(rec.id, text);
+            let id = cur_act.borrow().as_ref().map(|r| r.id);
+            if let Some(id) = id {
+                rename_cb(id, text);
             }
         });
 
@@ -221,22 +237,33 @@ impl InspectorPane {
 
         let cur_copy = current.clone();
         copy_btn.connect_clicked(move |_| {
-            if let Some(rec) = cur_copy.borrow().clone() {
+            let rec = cur_copy.borrow().clone();
+            if let Some(rec) = rec {
                 on_copy(rec);
             }
         });
 
         let cur_open = current.clone();
         open_btn.connect_clicked(move |_| {
-            if let Some(rec) = cur_open.borrow().clone() {
+            let rec = cur_open.borrow().clone();
+            if let Some(rec) = rec {
                 on_open_full(rec);
             }
         });
 
         let cur_move = current.clone();
         move_btn.connect_clicked(move |_| {
-            if let Some(rec) = cur_move.borrow().clone() {
+            let rec = cur_move.borrow().clone();
+            if let Some(rec) = rec {
                 on_move_dialog(rec);
+            }
+        });
+
+        let cur_del = current.clone();
+        delete_btn.connect_clicked(move |_| {
+            let rec = cur_del.borrow().clone();
+            if let Some(rec) = rec {
+                on_delete(rec);
             }
         });
 
@@ -248,6 +275,7 @@ impl InspectorPane {
             filename_label,
             filename_entry,
             filename_stack,
+            open_btn,
             channel_val,
             size_val,
             added_val,
@@ -258,6 +286,24 @@ impl InspectorPane {
             thumb_cache,
             on_quick_move: Rc::new(RefCell::new(Box::new(on_quick_move))),
         })
+    }
+
+    pub fn set_lightbox_mode(&self, in_lightbox: bool) {
+        self.open_btn.set_visible(!in_lightbox);
+    }
+
+    pub fn begin_inline_rename(&self) {
+        let rec = self.current.borrow().clone();
+        let Some(rec) = rec else { return };
+        self.filename_entry.set_text(&rec.filename);
+        self.filename_stack.set_visible_child_name("edit");
+        self.filename_entry.grab_focus();
+        let stem_end = rec
+            .filename
+            .rfind('.')
+            .filter(|&i| i > 0)
+            .unwrap_or(rec.filename.len()) as i32;
+        self.filename_entry.select_region(0, stem_end);
     }
 
     pub fn current_id(&self) -> Option<i64> {

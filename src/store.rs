@@ -6,6 +6,60 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::media;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSort {
+    Count,
+    Name,
+    Recent,
+    Custom,
+}
+
+impl ChannelSort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Name => "name",
+            Self::Recent => "recent",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "name" => Self::Name,
+            "recent" => Self::Recent,
+            "custom" => Self::Custom,
+            _ => Self::Count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSort {
+    Newest,
+    Oldest,
+}
+
+impl ImageSort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Newest => "newest",
+            Self::Oldest => "oldest",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "oldest" => Self::Oldest,
+            _ => Self::Newest,
+        }
+    }
+
+    pub fn is_chronological(self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Channel {
     pub id: i64,
@@ -185,6 +239,7 @@ impl Store {
         .map_err(|e| format!("failed to initialize schema: {e}"))?;
 
         ensure_column(&conn, "channels", "remote_id", "TEXT")?;
+        ensure_column(&conn, "channels", "position", "INTEGER")?;
         ensure_column(&conn, "images", "remote_id", "TEXT")?;
         ensure_column(&conn, "images", "synced_at", "INTEGER")?;
 
@@ -218,24 +273,36 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn list_channels(&self) -> Result<Vec<Channel>, String> {
+        self.list_channels_sorted(ChannelSort::Count)
+    }
+
+    pub fn list_channels_sorted(&self, sort: ChannelSort) -> Result<Vec<Channel>, String> {
+        let order_by = match sort {
+            ChannelSort::Count => "img_count DESC, c.slug ASC",
+            ChannelSort::Name => "c.slug ASC",
+            ChannelSort::Recent => "COALESCE(last_added, 0) DESC, c.slug ASC",
+            ChannelSort::Custom => "COALESCE(c.position, 2147483647) ASC, img_count DESC, c.slug ASC",
+        };
+        let sql = format!(
+            "SELECT c.id,
+                    c.slug,
+                    COUNT(i.id) AS img_count,
+                    (SELECT i2.thumb_path
+                     FROM images i2
+                     WHERE i2.channel_id = c.id
+                     ORDER BY i2.created_at DESC, i2.id DESC
+                     LIMIT 1) AS latest_thumb,
+                    MAX(i.created_at) AS last_added
+             FROM channels c
+             LEFT JOIN images i ON i.channel_id = c.id
+             GROUP BY c.id
+             ORDER BY {order_by}"
+        );
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT c.id,
-                        c.slug,
-                        COUNT(i.id) AS img_count,
-                        (SELECT i2.thumb_path
-                         FROM images i2
-                         WHERE i2.channel_id = c.id
-                         ORDER BY i2.created_at DESC, i2.id DESC
-                         LIMIT 1) AS latest_thumb,
-                        MAX(i.created_at) AS last_added
-                 FROM channels c
-                 LEFT JOIN images i ON i.channel_id = c.id
-                 GROUP BY c.id
-                 ORDER BY img_count DESC, c.slug ASC",
-            )
+            .prepare(&sql)
             .map_err(|e| format!("failed to query channels: {e}"))?;
 
         let rows = stmt
@@ -252,6 +319,22 @@ impl Store {
 
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("failed to read channel row: {e}"))
+    }
+
+    pub fn save_channel_order(&mut self, ordered_ids: &[i64]) -> Result<(), String> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| format!("failed to start reorder tx: {e}"))?;
+        for (idx, &id) in ordered_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE channels SET position = ?1 WHERE id = ?2",
+                params![idx as i64, id],
+            )
+            .map_err(|e| format!("failed to update channel position: {e}"))?;
+        }
+        tx.commit()
+            .map_err(|e| format!("failed to commit channel order: {e}"))
     }
 
     pub fn create_channel(&self, raw_name: &str) -> Result<Channel, String> {
@@ -288,6 +371,18 @@ impl Store {
     }
 
     pub fn list_images(&self, channel_id: Option<i64>) -> Result<Vec<ImageRecord>, String> {
+        self.list_images_sorted(channel_id, ImageSort::Newest)
+    }
+
+    pub fn list_images_sorted(
+        &self,
+        channel_id: Option<i64>,
+        sort: ImageSort,
+    ) -> Result<Vec<ImageRecord>, String> {
+        let order_by = match sort {
+            ImageSort::Newest => "i.created_at DESC, i.id DESC",
+            ImageSort::Oldest => "i.created_at ASC, i.id ASC",
+        };
         let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<ImageRecord> {
             Ok(ImageRecord {
                 id: row.get(0)?,
@@ -306,16 +401,17 @@ impl Store {
         };
 
         if let Some(cid) = channel_id {
+            let sql = format!(
+                "SELECT i.id, i.channel_id, c.slug, i.filename, i.rel_path, i.thumb_path,
+                        i.mime_type, i.width, i.height, i.size_bytes, i.created_at
+                 FROM images i
+                 JOIN channels c ON c.id = i.channel_id
+                 WHERE i.channel_id = ?1
+                 ORDER BY {order_by}"
+            );
             let mut stmt = self
                 .conn
-                .prepare(
-                    "SELECT i.id, i.channel_id, c.slug, i.filename, i.rel_path, i.thumb_path,
-                            i.mime_type, i.width, i.height, i.size_bytes, i.created_at
-                     FROM images i
-                     JOIN channels c ON c.id = i.channel_id
-                     WHERE i.channel_id = ?1
-                     ORDER BY i.created_at DESC, i.id DESC",
-                )
+                .prepare(&sql)
                 .map_err(|e| format!("failed to query channel images: {e}"))?;
             let rows = stmt
                 .query_map(params![cid], map_row)
@@ -323,15 +419,16 @@ impl Store {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("failed to read image row: {e}"))
         } else {
+            let sql = format!(
+                "SELECT i.id, i.channel_id, c.slug, i.filename, i.rel_path, i.thumb_path,
+                        i.mime_type, i.width, i.height, i.size_bytes, i.created_at
+                 FROM images i
+                 JOIN channels c ON c.id = i.channel_id
+                 ORDER BY {order_by}"
+            );
             let mut stmt = self
                 .conn
-                .prepare(
-                    "SELECT i.id, i.channel_id, c.slug, i.filename, i.rel_path, i.thumb_path,
-                            i.mime_type, i.width, i.height, i.size_bytes, i.created_at
-                     FROM images i
-                     JOIN channels c ON c.id = i.channel_id
-                     ORDER BY i.created_at DESC, i.id DESC",
-                )
+                .prepare(&sql)
                 .map_err(|e| format!("failed to query all images: {e}"))?;
             let rows = stmt
                 .query_map([], map_row)
@@ -1186,6 +1283,40 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
         buf.into_inner()
+    }
+
+    #[test]
+    fn channel_and_image_sorting_and_custom_order_persist() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("koma-sort-test-{nanos}"));
+        let mut store = Store::open(root.clone()).unwrap();
+        let png = sample_png_bytes();
+
+        let a = store.ingest_bytes("zeta", &png, Some(1000)).unwrap();
+        let _a2 = store.ingest_bytes("zeta", &png, Some(1500)).unwrap();
+        let b = store.ingest_bytes("alpha", &png, Some(3000)).unwrap();
+
+        let by_count = store.list_channels_sorted(ChannelSort::Count).unwrap();
+        assert_eq!(by_count[0].slug, "zeta");
+        let by_name = store.list_channels_sorted(ChannelSort::Name).unwrap();
+        assert_eq!(by_name[0].slug, "alpha");
+        let by_recent = store.list_channels_sorted(ChannelSort::Recent).unwrap();
+        assert_eq!(by_recent[0].slug, "alpha");
+
+        store.save_channel_order(&[b.channel_id, a.channel_id]).unwrap();
+        let by_custom = store.list_channels_sorted(ChannelSort::Custom).unwrap();
+        assert_eq!(by_custom[0].slug, "alpha");
+        assert_eq!(by_custom[1].slug, "zeta");
+
+        let newest = store.list_images_sorted(None, ImageSort::Newest).unwrap();
+        assert_eq!(newest[0].id, b.id);
+        let oldest = store.list_images_sorted(None, ImageSort::Oldest).unwrap();
+        assert_eq!(oldest[0].id, a.id);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
