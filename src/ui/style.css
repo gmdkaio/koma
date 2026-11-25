@@ -103,7 +103,19 @@ window.koma-window overlay-split-view > * {
     min-width: 6px;
     min-height: 6px;
     border-radius: 999px;
-    background-color: var(--k-accent);
+    background-color: color-mix(in srgb, currentColor 38%, transparent);
+}
+
+.koma-sync-dot.sync-ok {
+    background-color: #6ee7b7;
+}
+
+.koma-sync-dot.sync-busy {
+    background-color: #fbbf24;
+}
+
+.koma-sync-dot.sync-offline {
+    background-color: #f87171;
 }
 
 .koma-jump-btn {

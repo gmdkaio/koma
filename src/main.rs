@@ -1,5 +1,6 @@
 mod importer;
 mod media;
+mod storage;
 mod store;
 mod ui;
 mod zip;
@@ -13,14 +14,19 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 
 use crate::importer::{ImportOptions, run_import};
+use crate::storage::gdrive::{GDriveBackend, authorize_interactive};
+use crate::storage::sync::sync_once;
 use crate::store::{Store, default_data_dir};
 
 const APP_ID: &str = "dev.koma.App";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("import") {
-        return run_import_cli(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("import") => return run_import_cli(&args[1..]),
+        Some("auth") => return run_auth_cli(&args[1..]),
+        Some("sync") => return run_sync_cli(&args[1..]),
+        _ => {}
     }
 
     let app = adw::Application::builder().application_id(APP_ID).build();
@@ -29,6 +35,88 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn parse_data_dir_arg(args: &[String], cmd: &str) -> Result<PathBuf, ExitCode> {
+    let mut data_dir: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data-dir" => {
+                let Some(dir) = args.get(i + 1) else {
+                    eprintln!("koma {cmd}: --data-dir requires a path");
+                    return Err(ExitCode::FAILURE);
+                };
+                data_dir = Some(PathBuf::from(dir));
+                i += 1;
+            }
+            other => {
+                eprintln!("koma {cmd}: unexpected argument {other}");
+                return Err(ExitCode::FAILURE);
+            }
+        }
+        i += 1;
+    }
+    data_dir
+        .map(Ok)
+        .unwrap_or_else(default_data_dir)
+        .map_err(|e| {
+            eprintln!("koma {cmd}: {e}");
+            ExitCode::FAILURE
+        })
+}
+
+fn run_auth_cli(args: &[String]) -> ExitCode {
+    let Ok(root) = parse_data_dir_arg(args, "auth") else {
+        return ExitCode::FAILURE;
+    };
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        eprintln!("koma auth: {e}");
+        return ExitCode::FAILURE;
+    }
+    match authorize_interactive(&root) {
+        Ok(_) => {
+            println!("Connected Google Drive for {}", root.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("koma auth: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_sync_cli(args: &[String]) -> ExitCode {
+    let Ok(root) = parse_data_dir_arg(args, "sync") else {
+        return ExitCode::FAILURE;
+    };
+    let mut store = match Store::open(root.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("koma sync: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let backend = match GDriveBackend::open(root) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("koma sync: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match sync_once(&mut store, &backend) {
+        Ok(r) => {
+            println!(
+                "Synced: {} uploaded, {} downloaded, {} updated, {} linked, {} remote deleted, {} local deleted",
+                r.uploaded, r.downloaded, r.updated, r.linked, r.deleted_remote, r.deleted_local
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("koma sync: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

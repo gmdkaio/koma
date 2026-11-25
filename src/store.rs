@@ -31,6 +31,30 @@ pub struct ImageRecord {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SyncChannelRow {
+    pub id: i64,
+    pub slug: String,
+    pub remote_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncImageRow {
+    pub id: i64,
+    pub channel_remote_id: Option<String>,
+    pub filename: String,
+    pub rel_path: String,
+    pub mime_type: String,
+    pub remote_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncTombstone {
+    pub id: i64,
+    pub kind: String,
+    pub remote_id: String,
+}
+
 pub struct Store {
     root: PathBuf,
     conn: Connection,
@@ -149,9 +173,20 @@ impl Store {
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS sync_tombstones (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind       TEXT NOT NULL,
+                remote_id  TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             ",
         )
         .map_err(|e| format!("failed to initialize schema: {e}"))?;
+
+        ensure_column(&conn, "channels", "remote_id", "TEXT")?;
+        ensure_column(&conn, "images", "remote_id", "TEXT")?;
+        ensure_column(&conn, "images", "synced_at", "INTEGER")?;
 
         Ok(Self { root, conn })
     }
@@ -420,14 +455,39 @@ impl Store {
     }
 
     pub fn delete_channel(&mut self, channel_id: i64) -> Result<(), String> {
-        let slug: String = self
+        let (slug, remote_id): (String, Option<String>) = self
             .conn
             .query_row(
-                "SELECT slug FROM channels WHERE id = ?1",
+                "SELECT slug, remote_id FROM channels WHERE id = ?1",
                 params![channel_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| format!("channel not found: {e}"))?;
+
+        let now = now_unix();
+        if let Some(rid) = remote_id {
+            let _ = self.conn.execute(
+                "INSERT INTO sync_tombstones (kind, remote_id, created_at) VALUES ('folder', ?1, ?2)",
+                params![rid, now],
+            );
+        } else {
+            // If the folder itself wasn't linked, record tombstones for any synced child images.
+            let mut stmt = self
+                .conn
+                .prepare("SELECT remote_id FROM images WHERE channel_id = ?1 AND remote_id IS NOT NULL")
+                .map_err(|e| format!("failed to query synced images before channel delete: {e}"))?;
+            let rids: Vec<String> = stmt
+                .query_map(params![channel_id], |r| r.get(0))
+                .map_err(|e| format!("failed to map synced images: {e}"))?
+                .filter_map(Result::ok)
+                .collect();
+            for rid in rids {
+                let _ = self.conn.execute(
+                    "INSERT INTO sync_tombstones (kind, remote_id, created_at) VALUES ('file', ?1, ?2)",
+                    params![rid, now],
+                );
+            }
+        }
 
         self.conn
             .execute("DELETE FROM channels WHERE id = ?1", params![channel_id])
@@ -694,20 +754,27 @@ impl Store {
 
     pub fn delete_images(&mut self, image_ids: &[i64]) -> Result<usize, String> {
         let mut deleted = 0usize;
+        let now = now_unix();
         for &id in image_ids {
-            let paths: Option<(String, String)> = self
+            let row: Option<(String, String, Option<String>)> = self
                 .conn
                 .query_row(
-                    "SELECT rel_path, thumb_path FROM images WHERE id = ?1",
+                    "SELECT rel_path, thumb_path, remote_id FROM images WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(|e| format!("failed to look up image {id}: {e}"))?;
 
-            let Some((rel_path, thumb_path)) = paths else {
+            let Some((rel_path, thumb_path, remote_id)) = row else {
                 continue;
             };
+            if let Some(rid) = remote_id {
+                let _ = self.conn.execute(
+                    "INSERT INTO sync_tombstones (kind, remote_id, created_at) VALUES ('file', ?1, ?2)",
+                    params![rid, now],
+                );
+            }
             self.conn
                 .execute("DELETE FROM images WHERE id = ?1", params![id])
                 .map_err(|e| format!("failed to delete image {id}: {e}"))?;
@@ -834,6 +901,277 @@ impl Store {
         let mtime = file_mtime_unix(path);
         self.ingest_bytes(channel_name, &bytes, Some(mtime))
     }
+
+    pub fn list_channels_sync(&self) -> Result<Vec<SyncChannelRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, slug, remote_id FROM channels ORDER BY id ASC")
+            .map_err(|e| format!("failed to query sync channels: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SyncChannelRow {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    remote_id: row.get(2)?,
+                })
+            })
+            .map_err(|e| format!("failed to map sync channels: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read sync channel: {e}"))
+    }
+
+    pub fn set_channel_remote_id(&self, channel_id: i64, remote_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE channels SET remote_id = ?1 WHERE id = ?2",
+                params![remote_id, channel_id],
+            )
+            .map_err(|e| format!("failed to update channel remote_id: {e}"))?;
+        Ok(())
+    }
+
+    pub fn list_images_sync(&self) -> Result<Vec<SyncImageRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT i.id, c.remote_id, i.filename, i.rel_path, i.mime_type, i.remote_id
+                 FROM images i
+                 JOIN channels c ON c.id = i.channel_id
+                 ORDER BY i.id ASC",
+            )
+            .map_err(|e| format!("failed to query sync images: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SyncImageRow {
+                    id: row.get(0)?,
+                    channel_remote_id: row.get(1)?,
+                    filename: row.get(2)?,
+                    rel_path: row.get(3)?,
+                    mime_type: row.get(4)?,
+                    remote_id: row.get(5)?,
+                })
+            })
+            .map_err(|e| format!("failed to map sync images: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read sync image: {e}"))
+    }
+
+    pub fn set_image_remote_id(&self, image_id: i64, remote_id: &str) -> Result<(), String> {
+        let now = now_unix();
+        self.conn
+            .execute(
+                "UPDATE images SET remote_id = ?1, synced_at = ?2 WHERE id = ?3",
+                params![remote_id, now, image_id],
+            )
+            .map_err(|e| format!("failed to update image remote_id: {e}"))?;
+        Ok(())
+    }
+
+    pub fn list_tombstones(&self) -> Result<Vec<SyncTombstone>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, kind, remote_id FROM sync_tombstones ORDER BY id ASC")
+            .map_err(|e| format!("failed to query tombstones: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SyncTombstone {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    remote_id: row.get(2)?,
+                })
+            })
+            .map_err(|e| format!("failed to map tombstones: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read tombstone: {e}"))
+    }
+
+    pub fn clear_tombstone(&self, id: i64) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM sync_tombstones WHERE id = ?1", params![id])
+            .map_err(|e| format!("failed to clear tombstone {id}: {e}"))?;
+        Ok(())
+    }
+
+    pub fn delete_image_by_remote_id(&mut self, remote_id: &str) -> Result<bool, String> {
+        let row: Option<(i64, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT id, rel_path, thumb_path FROM images WHERE remote_id = ?1",
+                params![remote_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| format!("failed to look up remote image {remote_id}: {e}"))?;
+        let Some((id, rel_path, thumb_path)) = row else {
+            return Ok(false);
+        };
+        self.conn
+            .execute("DELETE FROM images WHERE id = ?1", params![id])
+            .map_err(|e| format!("failed to delete remote-removed image {id}: {e}"))?;
+        let _ = fs::remove_file(self.root.join(rel_path));
+        let _ = fs::remove_file(self.root.join(thumb_path));
+        Ok(true)
+    }
+
+    pub fn ingest_remote_bytes(
+        &mut self,
+        channel_name: &str,
+        remote_filename: &str,
+        bytes: &[u8],
+        remote_id: &str,
+        created_at: Option<i64>,
+    ) -> Result<ImageRecord, String> {
+        let slug = slugify(channel_name)?;
+        let decoded = media::inspect_and_thumbnail(bytes)?;
+        let ts = created_at.unwrap_or_else(now_unix);
+        let size_bytes = bytes.len() as u64;
+        let thumb_bytes = decoded.thumb_webp.len() as u64;
+
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| format!("failed to begin remote ingest tx: {e}"))?;
+
+        tx.execute(
+            "INSERT OR IGNORE INTO channels (slug, next_seq, created_at) VALUES (?1, 1, ?2)",
+            params![slug, ts],
+        )
+        .map_err(|e| format!("failed to ensure channel {slug}: {e}"))?;
+
+        let (channel_id, mut next_seq): (i64, i64) = tx
+            .query_row(
+                "SELECT id, next_seq FROM channels WHERE slug = ?1",
+                params![slug],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| format!("failed to read channel seq: {e}"))?;
+
+        let seq = next_seq;
+        next_seq += 1;
+
+        let clean_name = sanitize_filename(remote_filename)
+            .unwrap_or_else(|_| format!("{slug}_{seq:04}.{}", decoded.kind.ext()));
+        let stem = Path::new(&clean_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{slug}_{seq:04}"));
+
+        // If remote filename matches `<slug>_NNNN`, advance next_seq past it so local pastes never collide.
+        if let Some(suffix) = stem.strip_prefix(&format!("{slug}_"))
+            && let Ok(parsed) = suffix.parse::<i64>()
+            && parsed >= next_seq
+        {
+            next_seq = parsed + 1;
+        }
+
+        tx.execute(
+            "UPDATE channels SET next_seq = ?1 WHERE id = ?2",
+            params![next_seq, channel_id],
+        )
+        .map_err(|e| format!("failed to advance next_seq: {e}"))?;
+
+        let mut final_filename = clean_name;
+        let mut rel_path = format!("media/{slug}/{final_filename}");
+        if self.root.join(&rel_path).exists() {
+            final_filename = format!("{slug}_{seq:04}.{}", decoded.kind.ext());
+            rel_path = format!("media/{slug}/{final_filename}");
+        }
+        let thumb_stem = format!("{slug}_{seq:04}");
+        let thumb_path = format!("thumbs/{slug}/{thumb_stem}.webp");
+
+        let media_abs = self.root.join(&rel_path);
+        let thumb_abs = self.root.join(&thumb_path);
+        if let Some(p) = media_abs.parent() {
+            fs::create_dir_all(p).map_err(|e| format!("failed to create media dir: {e}"))?;
+        }
+        if let Some(p) = thumb_abs.parent() {
+            fs::create_dir_all(p).map_err(|e| format!("failed to create thumb dir: {e}"))?;
+        }
+
+        fs::write(&media_abs, bytes)
+            .map_err(|e| format!("failed to write {}: {e}", media_abs.display()))?;
+        if let Err(e) = fs::write(&thumb_abs, &decoded.thumb_webp) {
+            let _ = fs::remove_file(&media_abs);
+            return Err(format!("failed to write {}: {e}", thumb_abs.display()));
+        }
+
+        let insert_res = tx.execute(
+            "INSERT INTO images
+                (channel_id, seq, filename, rel_path, thumb_path, mime_type, width, height, size_bytes, created_at, remote_id, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                channel_id,
+                seq,
+                final_filename,
+                rel_path,
+                thumb_path,
+                decoded.kind.mime(),
+                decoded.width,
+                decoded.height,
+                size_bytes as i64,
+                ts,
+                remote_id,
+                now_unix(),
+            ],
+        );
+        if let Err(e) = insert_res {
+            let _ = fs::remove_file(&media_abs);
+            let _ = fs::remove_file(&thumb_abs);
+            return Err(format!("failed to insert remote image row: {e}"));
+        }
+        let id = tx.last_insert_rowid();
+        if let Err(e) = tx.commit() {
+            let _ = fs::remove_file(&media_abs);
+            let _ = fs::remove_file(&thumb_abs);
+            return Err(format!("failed to commit remote ingest: {e}"));
+        }
+
+        Ok(ImageRecord {
+            id,
+            channel_id,
+            channel_slug: slug,
+            filename: final_filename,
+            rel_path,
+            thumb_path,
+            mime_type: decoded.kind.mime().to_string(),
+            width: decoded.width,
+            height: decoded.height,
+            size_bytes,
+            thumb_bytes,
+            created_at: ts,
+        })
+    }
+
+    pub fn clear_all_remote_links(&self) -> Result<(), String> {
+        self.conn
+            .execute_batch(
+                "UPDATE channels SET remote_id = NULL;
+                 UPDATE images SET remote_id = NULL, synced_at = NULL;
+                 DELETE FROM sync_tombstones;",
+            )
+            .map_err(|e| format!("failed to clear remote sync links: {e}"))
+    }
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, sql_type: &str) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("failed to inspect {table}: {e}"))?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("failed to read columns for {table}: {e}"))?
+        .filter_map(Result::ok)
+        .any(|name| name == column);
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type}"),
+            [],
+        )
+        .map_err(|e| format!("failed to add column {table}.{column}: {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

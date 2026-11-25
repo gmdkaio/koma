@@ -7,11 +7,14 @@ mod switcher;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk4::{gdk, gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
+use crate::storage::gdrive::{self, GDriveClientConfig};
+use crate::storage::sync::{SyncEvent, SyncHandle, SyncStatus};
 use crate::store::{Channel, ImageRecord, Store, default_data_dir};
 use crate::ui::grid::GridCanvas;
 use crate::ui::inspector::InspectorPane;
@@ -32,6 +35,8 @@ struct AppCtx {
     /// Switches right content area between main gallery and Lightbox while keeping sidebar open.
     content_stack: gtk4::Stack,
     store: Rc<RefCell<Store>>,
+    sync: SyncHandle,
+    sync_status: RefCell<SyncStatus>,
     thumb_cache: Rc<RefCell<ThumbCache>>,
     channels: RefCell<Vec<Channel>>,
     active_view: Cell<ActiveView>,
@@ -44,6 +49,9 @@ struct AppCtx {
     // Sidebar widgets
     left_split: adw::OverlaySplitView,
     sidebar_toggle_btn: gtk4::ToggleButton,
+    sync_pill: gtk4::Box,
+    sync_dot: gtk4::Box,
+    sync_label: gtk4::Label,
     home_row_btn: gtk4::Button,
     channel_list: gtk4::ListBox,
     footer_count: gtk4::Label,
@@ -76,6 +84,37 @@ impl AppCtx {
     fn toast(&self, msg: &str) {
         let toast = adw::Toast::builder().title(msg).timeout(3).build();
         self.toast_overlay.add_toast(toast);
+    }
+
+    fn apply_sync_status(&self, status: SyncStatus) {
+        self.sync_dot.remove_css_class("sync-ok");
+        self.sync_dot.remove_css_class("sync-busy");
+        self.sync_dot.remove_css_class("sync-offline");
+        match &status {
+            SyncStatus::LocalOnly => {
+                self.sync_label.set_label("Local");
+                self.sync_pill
+                    .set_tooltip_text(Some("Local only (connect Google Drive in settings)"));
+            }
+            SyncStatus::Syncing => {
+                self.sync_dot.add_css_class("sync-busy");
+                self.sync_label.set_label("Syncing");
+                self.sync_pill
+                    .set_tooltip_text(Some("Syncing with Google Drive..."));
+            }
+            SyncStatus::Synced(summary) => {
+                self.sync_dot.add_css_class("sync-ok");
+                self.sync_label.set_label("Synced");
+                self.sync_pill.set_tooltip_text(Some(summary));
+            }
+            SyncStatus::Offline(err) => {
+                self.sync_dot.add_css_class("sync-offline");
+                self.sync_label.set_label("Offline");
+                self.sync_pill
+                    .set_tooltip_text(Some(&format!("Sync paused: {err}")));
+            }
+        }
+        *self.sync_status.borrow_mut() = status;
     }
 
     fn active_channel(&self) -> Option<Channel> {
@@ -322,6 +361,7 @@ impl AppCtx {
                     Ok(rec) => {
                         ctx.toast(&format!("Saved {} to #{}", rec.filename, ch.slug));
                         ctx.reload_all();
+                        ctx.sync.trigger_sync();
                     }
                     Err(e) => ctx.toast(&format!("Paste failed: {e}")),
                 }
@@ -346,6 +386,7 @@ impl AppCtx {
         }
         if saved > 0 {
             self.reload_all();
+            self.sync.trigger_sync();
         }
         if failed == 0 && saved > 0 {
             self.toast(&format!("Added {saved} image(s) to #{}", ch.slug));
@@ -452,6 +493,7 @@ impl AppCtx {
                         ctx.select_toggle.set_active(false);
                         ctx.toast(&format!("Deleted {n} image(s)"));
                         ctx.reload_all();
+                        ctx.sync.trigger_sync();
                     }
                     Err(e) => ctx.toast(&format!("Delete failed: {e}")),
                 }
@@ -491,6 +533,7 @@ impl AppCtx {
                                 ctx.reload_all();
                                 ctx.select_view(ActiveView::Channel(ch.id));
                                 ctx.toast(&format!("Created #{}", ch.slug));
+                                ctx.sync.trigger_sync();
                             }
                         }
                         Err(e) => ctx.toast(&format!("Could not create channel: {e}")),
@@ -519,6 +562,7 @@ impl AppCtx {
                     self.content_stack.set_visible_child_name("gallery");
                     self.toast(&format!("Moved {} image(s) to #{target_slug}", moved.len()));
                     self.reload_all();
+                    self.sync.trigger_sync();
                 }
             }
             Err(e) => self.toast(&format!("Move failed: {e}")),
@@ -551,6 +595,7 @@ impl AppCtx {
                         ctx.reload_all();
                         ctx.select_view(ActiveView::Channel(ch.id));
                         ctx.toast(&format!("Created #{}", ch.slug));
+                        ctx.sync.trigger_sync();
                     }
                     Err(e) => ctx.toast(&format!("Create failed: {e}")),
                 }
@@ -640,6 +685,7 @@ impl AppCtx {
                     Ok(updated) => {
                         ctx.toast(&format!("Renamed #{} to #{}", ch.slug, updated.slug));
                         ctx.reload_all();
+                        ctx.sync.trigger_sync();
                     }
                     Err(e) => ctx.toast(&format!("Rename failed: {e}")),
                 }
@@ -675,6 +721,7 @@ impl AppCtx {
                             ctx.toast(&format!("Merged #{} ({moved} images)", source.slug));
                             ctx.active_view.set(ActiveView::Channel(target_id));
                             ctx.reload_all();
+                            ctx.sync.trigger_sync();
                         }
                         Err(e) => ctx.toast(&format!("Merge failed: {e}")),
                     }
@@ -704,6 +751,7 @@ impl AppCtx {
                     Ok(()) => {
                         ctx.toast(&format!("Deleted #{}", ch.slug));
                         ctx.reload_all();
+                        ctx.sync.trigger_sync();
                     }
                     Err(e) => ctx.toast(&format!("Delete failed: {e}")),
                 }
@@ -755,6 +803,7 @@ pub fn build_ui(app: &adw::Application) {
     };
 
     let store = Rc::new(RefCell::new(store));
+    let sync = SyncHandle::spawn(root_dir.clone());
     let thumb_cache = Rc::new(RefCell::new(ThumbCache::new()));
     let thumb_loader = AsyncThumbLoader::new(thumb_cache.clone());
 
@@ -768,6 +817,17 @@ pub fn build_ui(app: &adw::Application) {
     sidebar_header.set_margin_bottom(11);
     sidebar_header.set_margin_start(14);
     sidebar_header.set_margin_end(12);
+
+    let brand_icon = gdk::Texture::from_bytes(&glib::Bytes::from_static(include_bytes!(
+        "../../assets/icon.png"
+    )))
+    .ok()
+    .map(|tex| {
+        let img = gtk4::Image::from_paintable(Some(&tex));
+        img.set_pixel_size(22);
+        img.set_valign(gtk4::Align::Center);
+        img
+    });
 
     let wordmark = gtk4::Label::builder()
         .label("koma")
@@ -788,6 +848,9 @@ pub fn build_ui(app: &adw::Application) {
     sync_pill.append(&sync_dot);
     sync_pill.append(&sync_label);
 
+    if let Some(icon) = brand_icon {
+        sidebar_header.append(&icon);
+    }
     sidebar_header.append(&wordmark);
     sidebar_header.append(&sync_pill);
 
@@ -1107,6 +1170,8 @@ pub fn build_ui(app: &adw::Application) {
         toast_overlay,
         content_stack: content_stack.clone(),
         store: store.clone(),
+        sync,
+        sync_status: RefCell::new(SyncStatus::LocalOnly),
         thumb_cache: thumb_cache.clone(),
         channels: RefCell::new(initial_channels),
         active_view: Cell::new(initial_view),
@@ -1117,6 +1182,9 @@ pub fn build_ui(app: &adw::Application) {
         suppress_sidebar_select: Cell::new(false),
         left_split: left_split.clone(),
         sidebar_toggle_btn: sidebar_toggle_btn.clone(),
+        sync_pill,
+        sync_dot,
+        sync_label,
         home_row_btn: home_row_btn.clone(),
         channel_list: channel_list.clone(),
         footer_count,
@@ -1210,6 +1278,7 @@ pub fn build_ui(app: &adw::Application) {
                 Ok(updated) => {
                     ctx.toast(&format!("Renamed to {}", updated.filename));
                     ctx.reload_images();
+                    ctx.sync.trigger_sync();
                 }
                 Err(e) => ctx.toast(&format!("Rename failed: {e}")),
             }
@@ -1488,6 +1557,35 @@ pub fn build_ui(app: &adw::Application) {
     });
     window.add_controller(drop_target);
 
+    ctx.apply_sync_status(SyncStatus::LocalOnly);
+    let weak_ctx = Rc::downgrade(&ctx);
+    glib::timeout_add_local(Duration::from_millis(250), move || {
+        let Some(ctx) = weak_ctx.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        for evt in ctx.sync.poll_events() {
+            match evt {
+                SyncEvent::StatusChanged(status) => ctx.apply_sync_status(status),
+                SyncEvent::SyncFinished(report) => {
+                    if report.had_local_changes() {
+                        ctx.reload_all();
+                        if report.downloaded > 0 {
+                            ctx.toast(&format!(
+                                "Pulled {} image(s) from Google Drive",
+                                report.downloaded
+                            ));
+                        }
+                    }
+                }
+                SyncEvent::AuthFinished(Ok(())) => ctx.toast("Connected to Google Drive"),
+                SyncEvent::AuthFinished(Err(e)) => {
+                    ctx.toast(&format!("Google Drive auth failed: {e}"))
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+
     ctx.reload_all();
     window.present();
 
@@ -1623,6 +1721,128 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
     let sep1 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     sep1.add_css_class("koma-switcher-sep");
     root.append(&sep1);
+
+    let drive_heading = gtk4::Label::builder()
+        .label("GOOGLE DRIVE")
+        .xalign(0.0)
+        .css_classes(["koma-section-label"])
+        .build();
+    root.append(&drive_heading);
+
+    let status_text = match &*ctx.sync_status.borrow() {
+        SyncStatus::LocalOnly => "Not connected (local only)".to_string(),
+        SyncStatus::Syncing => "Syncing with Google Drive...".to_string(),
+        SyncStatus::Synced(summary) => summary.clone(),
+        SyncStatus::Offline(err) => format!("Offline: {err}"),
+    };
+    let drive_status_label = gtk4::Label::builder()
+        .label(&status_text)
+        .xalign(0.0)
+        .wrap(true)
+        .max_width_chars(32)
+        .css_classes(["koma-meta-val"])
+        .build();
+    root.append(&drive_status_label);
+
+    let is_configured = GDriveClientConfig::is_configured();
+    let is_connected = gdrive::has_saved_tokens(ctx.store.borrow().root());
+
+    let import_json_dialog = |ctx_i: Rc<AppCtx>, pop_i: gtk4::Popover| {
+        pop_i.popdown();
+        let filter = gtk4::FileFilter::new();
+        filter.set_name(Some("Google OAuth JSON"));
+        filter.add_suffix("json");
+        let filters = gio::ListStore::new::<gtk4::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk4::FileDialog::builder()
+            .title("Select Google OAuth Desktop Client JSON")
+            .filters(&filters)
+            .build();
+        let win = ctx_i.window.clone();
+        dialog.open(Some(&win), gio::Cancellable::NONE, move |res| {
+            let Ok(file) = res else { return };
+            let Some(path) = file.path() else { return };
+            match gdrive::import_client_json(&path) {
+                Ok(_) => ctx_i.toast("Saved Google Drive client config; open settings to connect"),
+                Err(e) => ctx_i.toast(&format!("Import failed: {e}")),
+            }
+        });
+    };
+
+    if !is_configured {
+        let import_btn = gtk4::Button::builder()
+            .label("Import Client JSON")
+            .css_classes(["flat", "koma-action-btn"])
+            .build();
+        let ctx_i = ctx.clone();
+        let pop_i = popover.clone();
+        import_btn.connect_clicked(move |_| import_json_dialog(ctx_i.clone(), pop_i.clone()));
+        root.append(&import_btn);
+
+        let hint = gtk4::Label::builder()
+            .label("Desktop OAuth JSON -> ~/.config/koma/gdrive_client.json")
+            .xalign(0.0)
+            .wrap(true)
+            .max_width_chars(34)
+            .css_classes(["koma-tabular"])
+            .build();
+        root.append(&hint);
+    } else if !is_connected {
+        let connect_btn = gtk4::Button::builder()
+            .label("Connect Google Drive")
+            .css_classes(["flat", "koma-accent-btn"])
+            .build();
+        let ctx_c = ctx.clone();
+        let pop_c = popover.clone();
+        connect_btn.connect_clicked(move |_| {
+            pop_c.popdown();
+            ctx_c.toast("Opening browser to connect Google Drive...");
+            ctx_c.sync.start_oauth();
+        });
+        root.append(&connect_btn);
+
+        let replace_btn = gtk4::Button::builder()
+            .label("Replace Client JSON")
+            .css_classes(["flat", "koma-action-subtle"])
+            .build();
+        let ctx_i = ctx.clone();
+        let pop_i = popover.clone();
+        replace_btn.connect_clicked(move |_| import_json_dialog(ctx_i.clone(), pop_i.clone()));
+        root.append(&replace_btn);
+    } else {
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        let sync_now_btn = gtk4::Button::builder()
+            .label("Sync Now")
+            .hexpand(true)
+            .css_classes(["flat", "koma-action-btn"])
+            .build();
+        let disconnect_btn = gtk4::Button::builder()
+            .label("Disconnect")
+            .css_classes(["flat", "koma-action-subtle", "destructive-action"])
+            .build();
+        row.append(&sync_now_btn);
+        row.append(&disconnect_btn);
+        root.append(&row);
+
+        let ctx_s = ctx.clone();
+        let pop_s = popover.clone();
+        sync_now_btn.connect_clicked(move |_| {
+            pop_s.popdown();
+            ctx_s.sync.trigger_sync();
+        });
+
+        let ctx_d = ctx.clone();
+        let pop_d = popover.clone();
+        disconnect_btn.connect_clicked(move |_| {
+            pop_d.popdown();
+            ctx_d.sync.disconnect();
+            ctx_d.toast("Disconnected Google Drive");
+        });
+    }
+
+    let sep_drive = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    sep_drive.add_css_class("koma-switcher-sep");
+    root.append(&sep_drive);
 
     let storage_heading = gtk4::Label::builder()
         .label("STORAGE")
