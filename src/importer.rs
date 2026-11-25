@@ -189,10 +189,10 @@ mod tests {
         assert_eq!(channels[0].slug, "rezero");
         assert_eq!(channels[0].image_count, 2);
 
-        let images = store.list_images("rezero").unwrap();
+        let images = store.list_images(Some(channels[0].id)).unwrap();
         assert_eq!(images.len(), 2);
-        assert_eq!(images[0].filename, "rezero_0001.png");
-        assert_eq!(images[1].filename, "rezero_0002.png");
+        assert_eq!(images[0].filename, "rezero_0002.png");
+        assert_eq!(images[1].filename, "rezero_0001.png");
 
         let thumb_bytes = fs::read(dst.join("thumbs/rezero/rezero_0001.webp")).unwrap();
         assert_eq!(&thumb_bytes[0..4], b"RIFF");

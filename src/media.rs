@@ -59,7 +59,31 @@ unsafe extern "C" {
         quality_factor: f32,
         output: *mut *mut u8,
     ) -> usize;
+    fn WebPDecodeRGBA(
+        data: *const u8,
+        data_size: usize,
+        width: *mut c_int,
+        height: *mut c_int,
+    ) -> *mut u8;
     fn WebPFree(ptr: *mut c_void);
+}
+
+pub fn decode_webp_rgba(bytes: &[u8]) -> Option<(i32, i32, Vec<u8>)> {
+    let mut w: c_int = 0;
+    let mut h: c_int = 0;
+    // SAFETY: `bytes` is a valid slice; libwebp allocates `w * h * 4` RGBA bytes and we copy
+    // and release them with WebPFree before returning.
+    let ptr = unsafe { WebPDecodeRGBA(bytes.as_ptr(), bytes.len(), &mut w, &mut h) };
+    if ptr.is_null() || w <= 0 || h <= 0 {
+        if !ptr.is_null() {
+            unsafe { WebPFree(ptr.cast()) };
+        }
+        return None;
+    }
+    let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    let rgba = unsafe { std::slice::from_raw_parts(ptr, len).to_vec() };
+    unsafe { WebPFree(ptr.cast()) };
+    Some((w, h, rgba))
 }
 
 pub fn sniff_format(bytes: &[u8]) -> Result<MediaKind, String> {
