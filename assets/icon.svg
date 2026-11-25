@@ -63,20 +63,15 @@
       <line x1="348" y1="319" x2="346" y2="337"/>
     </g>
 
-    <!-- 45-degree tilted gimmicky blep mouth (right side tilted up, tongue poking out along the tilt) -->
-    <g transform="rotate(-24 256 353)">
-      <!-- Little pink tongue peeking out slightly right of center -->
-      <path d="M251 348
-               C249 367, 258 378, 269 376
-               C279 374, 282 362, 275 349 Z"
-            fill="#F59AA2" stroke="#151317" stroke-width="4.4" stroke-linejoin="round"/>
-      <!-- Subtle tongue crease -->
-      <path d="M263 352 C263 358, 265 363, 267 367"
-            fill="none" stroke="#B95D66" stroke-width="2.6" stroke-linecap="round"/>
-      <!-- Gently arched downturned mouth line (rotated so right side sits higher at ~45 deg vibe) -->
-      <path d="M233 355 Q256 341 281 354"
-            fill="none" stroke="#151317" stroke-width="4.8" stroke-linecap="round"/>
-    </g>
+    <!-- Straight downturned gimmicky blep mouth -->
+    <path d="M251 346
+             C249 365, 258 377, 269 375
+             C279 373, 282 361, 275 349 Z"
+          fill="#F59AA2" stroke="#151317" stroke-width="4.4" stroke-linejoin="round"/>
+    <path d="M263 351 C263 357, 265 362, 267 366"
+          fill="none" stroke="#B95D66" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M233 354 Q256 339 281 353"
+          fill="none" stroke="#151317" stroke-width="4.8" stroke-linecap="round"/>
 
     <!-- Front chestnut hair: airy wispy bangs + side locks -->
     <path d="M116 242
