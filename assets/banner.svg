@@ -3,6 +3,9 @@
     <clipPath id="mangaClip">
       <rect x="0" y="0" width="1280" height="360" rx="20"/>
     </clipPath>
+    <clipPath id="innerFrameClip">
+      <rect x="18" y="18" width="1244" height="324" rx="10"/>
+    </clipPath>
     <pattern id="screentone" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
       <circle cx="3" cy="3" r="1.4" fill="#151317" fill-opacity="0.11"/>
     </pattern>
@@ -12,24 +15,29 @@
     <!-- Warm manga paper base -->
     <rect x="0" y="0" width="1280" height="360" fill="#F4EFE6"/>
 
-    <!-- Manga panel outer ink frame -->
-    <rect x="18" y="18" width="1244" height="324" rx="10" fill="#FAF6EE" stroke="#151317" stroke-width="4.5"/>
+    <!-- Everything inside the inner manga frame is clipped cleanly so fills never overlap the border stroke -->
+    <g clip-path="url(#innerFrameClip)">
+      <rect x="18" y="18" width="1244" height="324" fill="#FAF6EE"/>
 
-    <!-- Right manga panel accent strip with subtle screentone -->
-    <path d="M950 18 L1262 18 L1262 342 L886 342 Z" fill="#E8DFD1"/>
-    <path d="M950 18 L1262 18 L1262 342 L886 342 Z" fill="url(#screentone)"/>
-    <line x1="950" y1="18" x2="886" y2="342" stroke="#151317" stroke-width="4.5"/>
+      <!-- Right manga panel accent strip with subtle screentone -->
+      <path d="M950 14 L1266 14 L1266 346 L886 346 Z" fill="#E8DFD1"/>
+      <path d="M950 14 L1266 14 L1266 346 L886 346 Z" fill="url(#screentone)"/>
+      <line x1="950" y1="14" x2="886" y2="346" stroke="#151317" stroke-width="4.5"/>
 
-    <!-- Minimal manga panel grid graphic on right -->
-    <g transform="translate(972 56)">
-      <rect x="0" y="0" width="118" height="106" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
-      <rect x="130" y="0" width="110" height="106" fill="#72B4FA" fill-opacity="0.32" stroke="#151317" stroke-width="3.5"/>
-      <rect x="0" y="118" width="154" height="130" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
-      <rect x="166" y="118" width="74" height="130" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
-      <text x="14" y="232" font-family="JetBrainsMono Nerd Font, Adwaita Mono, monospace" font-size="11.5" font-weight="600" fill="#151317" fill-opacity="0.72">koma_0001.png</text>
-      <rect x="12" y="12" width="44" height="18" fill="#151317"/>
-      <text x="19" y="25" font-family="JetBrainsMono Nerd Font, Adwaita Mono, monospace" font-size="10.5" font-weight="700" fill="#FAF6EE">#01</text>
+      <!-- Minimal manga panel grid graphic on right (uniform 3.5px ink borders, exact 12px gutters) -->
+      <g transform="translate(972 56)">
+        <rect x="0" y="0" width="118" height="106" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
+        <rect x="130" y="0" width="110" height="106" fill="#72B4FA" fill-opacity="0.32" stroke="#151317" stroke-width="3.5"/>
+        <rect x="0" y="118" width="154" height="130" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
+        <rect x="166" y="118" width="74" height="130" fill="#FAF6EE" stroke="#151317" stroke-width="3.5"/>
+        <text x="14" y="232" font-family="JetBrainsMono Nerd Font, Adwaita Mono, monospace" font-size="11.5" font-weight="600" fill="#151317" fill-opacity="0.72">koma_0001.png</text>
+        <rect x="12" y="12" width="44" height="18" fill="#151317"/>
+        <text x="19" y="25" font-family="JetBrainsMono Nerd Font, Adwaita Mono, monospace" font-size="10.5" font-weight="700" fill="#FAF6EE">#01</text>
+      </g>
     </g>
+
+    <!-- Uniform outer manga panel ink frame drawn on top of clipped fills -->
+    <rect x="18" y="18" width="1244" height="324" rx="10" fill="none" stroke="#151317" stroke-width="4.5"/>
 
     <!-- Official Chinatsu Blep Icon -->
     <g transform="translate(86 76) scale(0.41)">
