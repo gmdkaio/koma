@@ -1,0 +1,592 @@
+/* Semantic theming only: inherits --window-bg-color, --sidebar-bg-color,
+   --card-bg-color, --popover-bg-color, --dialog-bg-color, --accent-bg-color,
+   --accent-color, --accent-fg-color from ~/.config/gtk-4.0/gtk.css */
+
+/* === SHELL SURFACES (tonal layering, zero GTK bevels) === */
+
+.koma-sidebar {
+    background-color: var(--sidebar-bg-color);
+    border-right: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    min-width: 214px;
+}
+
+.koma-canvas-bg {
+    background-color: color-mix(in srgb, var(--window-bg-color) 76%, black 24%);
+}
+
+.koma-wordmark {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.03em;
+}
+
+.koma-status-inline {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.54;
+}
+
+.koma-sync-dot {
+    min-width: 6px;
+    min-height: 6px;
+    border-radius: 999px;
+    background-color: var(--accent-bg-color);
+}
+
+/* === SIDEBAR CONTROLS === */
+
+.koma-jump-btn {
+    padding: 5px 9px;
+    border-radius: 4px;
+    background-color: color-mix(in srgb, currentColor 4%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+    box-shadow: none;
+    min-height: 0;
+}
+
+.koma-jump-btn:hover {
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    border-color: color-mix(in srgb, currentColor 11%, transparent);
+}
+
+.koma-home-btn {
+    border-radius: 4px;
+    padding: 5px 9px;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    box-shadow: none;
+    min-height: 0;
+    opacity: 0.76;
+}
+
+.koma-home-btn:hover {
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    opacity: 1;
+}
+
+.koma-home-active,
+.koma-home-active:hover {
+    background-color: color-mix(in srgb, var(--accent-bg-color) 13%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent-bg-color);
+    color: var(--accent-color);
+    font-weight: 600;
+    opacity: 1;
+}
+
+.koma-home-active label,
+.koma-home-active image {
+    color: var(--accent-color);
+}
+
+.koma-kbd {
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: monospace;
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    opacity: 0.65;
+}
+
+.koma-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    opacity: 0.42;
+}
+
+.koma-sidebar-list {
+    background: transparent;
+}
+
+.koma-sidebar-list > row {
+    border-radius: 4px;
+    margin: 1px 8px;
+    padding: 0;
+    font-size: 13px;
+    min-height: 0;
+    transition: background-color 90ms ease;
+}
+
+.koma-sidebar-list > row:hover {
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.koma-sidebar-list > row:selected,
+.koma-sidebar-list > row:selected:hover {
+    background-color: color-mix(in srgb, var(--accent-bg-color) 13%, transparent);
+    box-shadow: inset 2px 0 0 var(--accent-bg-color);
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.koma-sidebar-list > row:selected label {
+    color: var(--accent-color);
+    opacity: 1;
+}
+
+.koma-channel-hash {
+    opacity: 0.36;
+    font-weight: 500;
+}
+
+.koma-tabular {
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+    font-size: 11px;
+    opacity: 0.46;
+}
+
+.koma-sidebar-footer {
+    border-top: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    padding: 7px 10px 7px 12px;
+    font-size: 11.5px;
+}
+
+/* === GHOST / UTILITY BUTTONS (no clunky GTK boxes) === */
+
+.koma-ghost-btn {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: 4px;
+    min-width: 26px;
+    min-height: 26px;
+    padding: 3px 6px;
+    opacity: 0.62;
+    transition: background-color 90ms ease, opacity 90ms ease;
+}
+
+.koma-ghost-btn:hover {
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    opacity: 1;
+}
+
+.koma-ghost-btn:checked {
+    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
+    color: var(--accent-color);
+    opacity: 1;
+}
+
+.koma-ghost-text {
+    background: transparent;
+    border: 1px solid transparent;
+    box-shadow: none;
+    border-radius: 4px;
+    padding: 3px 9px;
+    min-height: 26px;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 0.72;
+    transition: background-color 90ms ease, opacity 90ms ease;
+}
+
+.koma-ghost-text:hover {
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+    opacity: 1;
+}
+
+.koma-ghost-text:checked {
+    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent-bg-color) 32%, transparent);
+    color: var(--accent-color);
+    font-weight: 600;
+    opacity: 1;
+}
+
+.koma-vsep {
+    min-width: 1px;
+    min-height: 14px;
+    background-color: color-mix(in srgb, currentColor 10%, transparent);
+    margin: 0 3px;
+}
+
+/* === COMPACT SINGLE-LINE TOPBAR === */
+
+.koma-topbar {
+    background-color: var(--window-bg-color);
+    border-bottom: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    padding: 7px 14px;
+}
+
+.koma-channel-title {
+    font-size: 14.5px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+}
+
+.koma-title-count {
+    font-family: monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    opacity: 0.45;
+    margin-left: 2px;
+}
+
+.koma-segmented {
+    background-color: color-mix(in srgb, currentColor 5%, transparent);
+    border-radius: 4px;
+    padding: 2px;
+}
+
+.koma-segmented button {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: 3px;
+    min-width: 26px;
+    min-height: 22px;
+    padding: 2px 6px;
+    opacity: 0.55;
+}
+
+.koma-segmented button:hover {
+    opacity: 0.9;
+}
+
+.koma-segmented button:checked {
+    background-color: color-mix(in srgb, currentColor 12%, transparent);
+    opacity: 1;
+}
+
+/* Hairline precision zoom slider */
+.koma-slider {
+    padding: 0 4px;
+}
+
+.koma-slider trough {
+    min-height: 2px;
+    border-radius: 1px;
+    background-color: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.koma-slider highlight {
+    min-height: 2px;
+    border-radius: 1px;
+    background-color: color-mix(in srgb, currentColor 55%, transparent);
+}
+
+.koma-slider slider {
+    min-width: 8px;
+    min-height: 8px;
+    margin: -3px;
+    border-radius: 1px;
+    background-color: currentColor;
+    opacity: 0.78;
+    box-shadow: none;
+    border: none;
+}
+
+.koma-slider:hover slider {
+    background-color: var(--accent-bg-color);
+    opacity: 1;
+}
+
+/* === SHARP-CORNER EDITORIAL GALLERY === */
+
+.koma-gallery-list {
+    background: transparent;
+    padding: 10px 14px 32px 14px;
+    outline: none;
+}
+
+.koma-gallery-list:focus,
+.koma-gallery-list:focus-visible {
+    outline: none;
+}
+
+.koma-gallery-list > row,
+.koma-gallery-list > row:hover,
+.koma-gallery-list > row:selected,
+.koma-gallery-list > row:focus,
+.koma-gallery-list > row:focus-visible {
+    background: transparent;
+    outline: none;
+    box-shadow: none;
+    padding: 0 0 6px 0;
+}
+
+.koma-tile-frame {
+    background-color: color-mix(in srgb, var(--card-bg-color) 70%, black 30%);
+    border-radius: 0px;
+    box-shadow: none;
+    transition: box-shadow 90ms ease;
+}
+
+.koma-tile-frame:hover {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 42%, transparent);
+}
+
+.koma-tile-selected .koma-tile-frame {
+    box-shadow: inset 0 0 0 2px var(--accent-bg-color);
+}
+
+/* Hover-only filename scrim inside bottom of tile (zero permanent text clutter) */
+.koma-tile-scrim {
+    background-image: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.35) 60%, transparent);
+    padding: 14px 7px 5px 7px;
+    opacity: 0;
+    transition: opacity 110ms ease;
+}
+
+.koma-tile-frame:hover .koma-tile-scrim,
+.koma-tile-selected .koma-tile-scrim {
+    opacity: 1;
+}
+
+.koma-tile-caption {
+    font-family: monospace;
+    font-size: 10.5px;
+    color: rgba(255, 255, 255, 0.92);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.koma-tile-ch-tag {
+    padding: 2px 6px;
+    margin: 5px;
+    border-radius: 2px;
+    font-family: monospace;
+    font-size: 10px;
+    font-weight: 600;
+    background-color: rgba(12, 14, 18, 0.76);
+    color: var(--accent-color);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    min-height: 0;
+}
+
+.koma-tile-ch-tag:hover {
+    background-color: var(--accent-bg-color);
+    color: var(--accent-fg-color);
+}
+
+.koma-check-badge {
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 2px;
+    background-color: var(--accent-bg-color);
+    color: var(--accent-fg-color);
+    font-size: 11px;
+    font-weight: 700;
+    margin: 5px;
+}
+
+.koma-timeline-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    opacity: 0.82;
+}
+
+.koma-timeline-rule {
+    min-height: 1px;
+    background-color: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+/* === FLOATING MULTI-SELECT BAR === */
+
+.koma-floating-dock {
+    padding: 6px 8px 6px 14px;
+    border-radius: 6px;
+    background-color: color-mix(in srgb, var(--popover-bg-color) 96%, black 4%);
+    border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    margin-bottom: 16px;
+}
+
+.koma-accent-btn {
+    background-color: var(--accent-bg-color);
+    color: var(--accent-fg-color);
+    border: none;
+    box-shadow: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    min-height: 0;
+}
+
+.koma-accent-btn:hover {
+    filter: brightness(1.06);
+}
+
+/* === EDITORIAL RIGHT INSPECTOR === */
+
+.koma-inspector {
+    background-color: var(--sidebar-bg-color);
+    border-left: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    padding: 12px 14px;
+}
+
+.koma-inspector-preview {
+    background-color: color-mix(in srgb, var(--card-bg-color) 65%, black 35%);
+    border-radius: 0px;
+    border: 1px solid color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.koma-inspector-filename {
+    font-family: monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.koma-meta-card {
+    background-color: color-mix(in srgb, currentColor 3%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+    border-radius: 4px;
+    padding: 10px 11px;
+}
+
+.koma-meta-key {
+    font-size: 11px;
+    opacity: 0.48;
+}
+
+.koma-meta-val {
+    font-family: monospace;
+    font-size: 11.5px;
+    opacity: 0.88;
+}
+
+.koma-action-btn {
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    box-shadow: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-height: 0;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.koma-action-btn:hover {
+    background-color: color-mix(in srgb, currentColor 11%, transparent);
+}
+
+.koma-action-subtle {
+    background: transparent;
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    box-shadow: none;
+    border-radius: 4px;
+    padding: 5px 10px;
+    min-height: 0;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 0.78;
+}
+
+.koma-action-subtle:hover {
+    background-color: color-mix(in srgb, currentColor 6%, transparent);
+    opacity: 1;
+}
+
+.koma-quick-move > flowboxchild,
+.koma-quick-move > flowboxchild:focus {
+    padding: 0;
+    outline: none;
+    background: transparent;
+}
+
+.koma-chip {
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 11.5px;
+    background-color: color-mix(in srgb, currentColor 4%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    box-shadow: none;
+    min-height: 0;
+    opacity: 0.8;
+}
+
+.koma-chip:hover {
+    background-color: color-mix(in srgb, var(--accent-bg-color) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent-bg-color) 35%, transparent);
+    color: var(--accent-color);
+    opacity: 1;
+}
+
+/* === COMMAND PALETTE (Ctrl+K) === */
+
+.koma-switcher {
+    background-color: color-mix(in srgb, var(--dialog-bg-color) 92%, black 8%);
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, currentColor 11%, transparent);
+}
+
+.koma-switcher-entry {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    outline: none;
+    font-size: 14.5px;
+    padding: 6px 2px;
+    min-height: 0;
+}
+
+.koma-switcher-entry:focus-within {
+    outline: none;
+    box-shadow: none;
+}
+
+.koma-switcher-thumb {
+    border-radius: 0px;
+    background-color: var(--card-bg-color);
+}
+
+.koma-switcher-sep {
+    min-height: 1px;
+    background-color: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+/* === FULL-SIZE LIGHTBOX === */
+
+.koma-lightbox {
+    background-color: color-mix(in srgb, var(--window-bg-color) 65%, black 35%);
+}
+
+.koma-lightbox-bar {
+    padding: 8px 14px;
+    background-color: color-mix(in srgb, var(--window-bg-color) 88%, black 12%);
+    border-bottom: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.koma-lightbox-nav {
+    background-color: rgba(12, 14, 18, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+    border-radius: 4px;
+    min-width: 34px;
+    min-height: 48px;
+    padding: 0;
+    opacity: 0.65;
+    transition: opacity 100ms ease, background-color 100ms ease;
+}
+
+.koma-lightbox-nav:hover {
+    background-color: rgba(12, 14, 18, 0.85);
+    opacity: 1;
+}
+
+.koma-filmstrip {
+    padding: 8px 14px;
+    background-color: color-mix(in srgb, var(--window-bg-color) 88%, black 12%);
+    border-top: 1px solid color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.koma-filmstrip-item {
+    border-radius: 0px;
+    padding: 0;
+    border: 2px solid transparent;
+    opacity: 0.42;
+    transition: opacity 100ms ease, border-color 100ms ease;
+}
+
+.koma-filmstrip-item:hover {
+    opacity: 0.85;
+}
+
+.koma-filmstrip-active,
+.koma-filmstrip-active:hover {
+    border-color: var(--accent-bg-color);
+    opacity: 1;
+}
