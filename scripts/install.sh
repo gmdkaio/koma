@@ -3,13 +3,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$repo_root/scripts/oauth-env.sh" "${XDG_CONFIG_HOME:-$HOME/.config}/koma/gdrive_client.json"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 apps_dir="$data_dir/applications"
 icons_dir="$data_dir/icons/hicolor"
 
 if [[ "${1:-}" != "--no-build" ]]; then
+    source "$repo_root/scripts/oauth-env.sh" "${XDG_CONFIG_HOME:-$HOME/.config}/koma/gdrive_client.json"
     cargo build --release --manifest-path "$repo_root/Cargo.toml"
 fi
 
