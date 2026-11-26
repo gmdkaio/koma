@@ -7,8 +7,8 @@ class ModelsTest {
     @Test
     fun slugifyNormalizesChannelNamesLikePcApp() {
         assertEquals("ynu", slugifyChannel("  YnU "))
-        assertEquals("blue_box", slugifyChannel("Blue--Box!"))
-        assertEquals("re_zero_2", slugifyChannel("Re:Zero 2"))
+        assertEquals("blue box", slugifyChannel("Blue   Box!"))
+        assertEquals("re_zero 2", slugifyChannel("Re_Zero 2"))
     }
 
     @Test

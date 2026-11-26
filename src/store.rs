@@ -128,21 +128,23 @@ pub fn default_data_dir() -> Result<PathBuf, String> {
 
 pub fn slugify(raw: &str) -> Result<String, String> {
     let mut slug = String::with_capacity(raw.len());
-    let mut prev_underscore = false;
+    let mut prev_space = false;
 
     for ch in raw.chars() {
         let c = ch.to_ascii_lowercase();
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+            if (c == '_' || c == '-') && slug.is_empty() {
+                continue;
+            }
             slug.push(c);
-            prev_underscore = false;
-        } else if (c == '_' || c == '-' || c.is_whitespace()) && !slug.is_empty() && !prev_underscore
-        {
-            slug.push('_');
-            prev_underscore = true;
+            prev_space = false;
+        } else if c.is_whitespace() && !slug.is_empty() && !prev_space {
+            slug.push(' ');
+            prev_space = true;
         }
     }
 
-    while slug.ends_with('_') {
+    while slug.ends_with([' ', '_', '-']) {
         slug.pop();
     }
 
@@ -1343,8 +1345,8 @@ mod tests {
         assert_eq!(renamed_img.filename, "custom_shot.png");
         assert!(root.join(&renamed_img.rel_path).exists());
 
-        let renamed_ch = store.rename_channel(beta.id, "gamma").unwrap();
-        assert_eq!(renamed_ch.slug, "gamma");
+        let renamed_ch = store.rename_channel(beta.id, "Gamma  Squad").unwrap();
+        assert_eq!(renamed_ch.slug, "gamma squad");
         assert_eq!(renamed_ch.image_count, 2);
         let gamma_imgs = store.list_images(Some(renamed_ch.id)).unwrap();
         assert!(gamma_imgs.iter().all(|i| root.join(&i.rel_path).exists()));

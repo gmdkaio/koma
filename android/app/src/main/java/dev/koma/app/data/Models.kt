@@ -95,17 +95,18 @@ sealed interface ActiveTab {
 
 fun slugifyChannel(raw: String): String {
     val sb = StringBuilder()
-    var prevUnderscore = false
+    var prevSpace = false
     for (ch in raw.trim().lowercase()) {
-        if (ch in 'a'..'z' || ch in '0'..'9') {
+        if (ch in 'a'..'z' || ch in '0'..'9' || ch == '_' || ch == '-') {
+            if ((ch == '_' || ch == '-') && sb.isEmpty()) continue
             sb.append(ch)
-            prevUnderscore = false
-        } else if (sb.isNotEmpty() && !prevUnderscore) {
-            sb.append('_')
-            prevUnderscore = true
+            prevSpace = false
+        } else if (ch.isWhitespace() && sb.isNotEmpty() && !prevSpace) {
+            sb.append(' ')
+            prevSpace = true
         }
     }
-    return sb.toString().trim('_')
+    return sb.toString().trimEnd(' ', '_', '-')
 }
 
 fun nextChannelFilename(slug: String, existingNames: Collection<String>, ext: String): String {

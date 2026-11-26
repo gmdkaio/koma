@@ -255,6 +255,7 @@ impl AppCtx {
             if editing_id == Some(ch.id) {
                 let entry = gtk4::Entry::builder()
                     .text(&ch.slug)
+                    .width_chars(1)
                     .hexpand(true)
                     .css_classes(["koma-inline-entry"])
                     .build();
@@ -264,28 +265,37 @@ impl AppCtx {
                 entry.connect_activate(move |e| {
                     let raw = e.text().to_string();
                     ctx_act.editing_channel_id.set(None);
-                    if raw.trim().is_empty() || raw.trim() == old_slug {
-                        ctx_act.rebuild_sidebar();
-                        return;
-                    }
-                    match ctx_act.store.borrow_mut().rename_channel(ch_id, &raw) {
-                        Ok(updated) => {
-                            ctx_act.toast(&format!("Renamed #{old_slug} to #{}", updated.slug));
-                            ctx_act.reload_all();
-                            ctx_act.sync.trigger_sync();
+                    let ctx_deferred = ctx_act.clone();
+                    let old_slug = old_slug.clone();
+                    glib::idle_add_local_once(move || {
+                        if raw.trim().is_empty() || raw.trim() == old_slug {
+                            ctx_deferred.rebuild_sidebar();
+                            return;
                         }
-                        Err(err) => {
-                            ctx_act.toast(&format!("Rename failed: {err}"));
-                            ctx_act.rebuild_sidebar();
+                        let res = ctx_deferred.store.borrow_mut().rename_channel(ch_id, &raw);
+                        match res {
+                            Ok(updated) => {
+                                ctx_deferred.toast(&format!(
+                                    "Renamed #{old_slug} to #{}",
+                                    updated.slug
+                                ));
+                                ctx_deferred.reload_all();
+                                ctx_deferred.sync.trigger_sync();
+                            }
+                            Err(err) => {
+                                ctx_deferred.toast(&format!("Rename failed: {err}"));
+                                ctx_deferred.rebuild_sidebar();
+                            }
                         }
-                    }
+                    });
                 });
                 let key_ctrl = gtk4::EventControllerKey::new();
                 let ctx_esc = self.clone();
                 key_ctrl.connect_key_pressed(move |_, key, _, _| {
                     if key == gdk::Key::Escape {
                         ctx_esc.editing_channel_id.set(None);
-                        ctx_esc.rebuild_sidebar();
+                        let c2 = ctx_esc.clone();
+                        glib::idle_add_local_once(move || c2.rebuild_sidebar());
                         return glib::Propagation::Stop;
                     }
                     glib::Propagation::Proceed
@@ -938,17 +948,20 @@ impl AppCtx {
             &heading,
             "Removes the selected file(s) from koma and trashes them in Google Drive on next sync.",
             "Delete",
-            move || match ctx.store.borrow_mut().delete_images(&ids) {
-                Ok(n) => {
-                    ctx.select_mode.set(false);
-                    if ctx.select_toggle.is_active() {
-                        ctx.select_toggle.set_active(false);
+            move || {
+                let res = ctx.store.borrow_mut().delete_images(&ids);
+                match res {
+                    Ok(n) => {
+                        ctx.select_mode.set(false);
+                        if ctx.select_toggle.is_active() {
+                            ctx.select_toggle.set_active(false);
+                        }
+                        ctx.toast(&format!("Deleted {n} image(s)"));
+                        ctx.reload_all();
+                        ctx.sync.trigger_sync();
                     }
-                    ctx.toast(&format!("Deleted {n} image(s)"));
-                    ctx.reload_all();
-                    ctx.sync.trigger_sync();
+                    Err(e) => ctx.toast(&format!("Delete failed: {e}")),
                 }
-                Err(e) => ctx.toast(&format!("Delete failed: {e}")),
             },
         );
     }
@@ -974,7 +987,8 @@ impl AppCtx {
                     ctx.move_images_to(ids, target_id);
                 }
                 SwitcherAction::CreateChannel(slug, also_move) => {
-                    match ctx.store.borrow().create_channel(&slug) {
+                    let res = ctx.store.borrow().create_channel(&slug);
+                    match res {
                         Ok(ch) => {
                             if also_move {
                                 let ids = explicit_ids
@@ -1000,7 +1014,8 @@ impl AppCtx {
             self.toast("No image selected to move");
             return;
         }
-        match self.store.borrow_mut().move_images(&ids, target_channel_id) {
+        let res = self.store.borrow_mut().move_images(&ids, target_channel_id);
+        match res {
             Ok(moved) => {
                 let target_slug = moved
                     .first()
@@ -1064,12 +1079,13 @@ impl AppCtx {
         box_menu.append(&delete_btn);
         popover.set_child(Some(&box_menu));
 
+        let pending_rename = Rc::new(Cell::new(false));
         let pop_r = popover.clone();
-        let ctx_r = self.clone();
+        let pr_click = pending_rename.clone();
         let ch_id = ch.id;
         rename_btn.connect_clicked(move |_| {
+            pr_click.set(true);
             pop_r.popdown();
-            ctx_r.begin_inline_rename_channel(ch_id);
         });
 
         let pop_m = popover.clone();
@@ -1088,7 +1104,14 @@ impl AppCtx {
             ctx_d.prompt_delete_channel(ch_d.clone());
         });
 
-        popover.connect_closed(|p| p.unparent());
+        let ctx_r = self.clone();
+        popover.connect_closed(move |p| {
+            p.unparent();
+            if pending_rename.replace(false) {
+                let c2 = ctx_r.clone();
+                glib::idle_add_local_once(move || c2.begin_inline_rename_channel(ch_id));
+            }
+        });
         popover.popup();
     }
 
@@ -1114,7 +1137,8 @@ impl AppCtx {
             SwitcherMode::MoveSelected,
             move |action| {
                 if let SwitcherAction::MoveToChannel(target_id) = action {
-                    match ctx.store.borrow_mut().merge_channels(source.id, target_id) {
+                    let res = ctx.store.borrow_mut().merge_channels(source.id, target_id);
+                    match res {
                         Ok(moved) => {
                             ctx.toast(&format!("Merged #{} ({moved} images)", source.slug));
                             ctx.active_view.set(ActiveView::Channel(target_id));
@@ -1139,13 +1163,16 @@ impl AppCtx {
             &format!("Delete #{}?", ch.slug),
             &body,
             "Delete",
-            move || match ctx.store.borrow_mut().delete_channel(ch.id) {
-                Ok(()) => {
-                    ctx.toast(&format!("Deleted #{}", ch.slug));
-                    ctx.reload_all();
-                    ctx.sync.trigger_sync();
+            move || {
+                let res = ctx.store.borrow_mut().delete_channel(ch.id);
+                match res {
+                    Ok(()) => {
+                        ctx.toast(&format!("Deleted #{}", ch.slug));
+                        ctx.reload_all();
+                        ctx.sync.trigger_sync();
+                    }
+                    Err(e) => ctx.toast(&format!("Delete failed: {e}")),
                 }
-                Err(e) => ctx.toast(&format!("Delete failed: {e}")),
             },
         );
     }
@@ -1878,13 +1905,16 @@ pub fn build_ui(app: &adw::Application) {
         },
         {
             let ctx = ctx.clone();
-            move |id, new_name| match ctx.store.borrow_mut().rename_image(id, &new_name) {
-                Ok(updated) => {
-                    ctx.toast(&format!("Renamed to {}", updated.filename));
-                    ctx.reload_images();
-                    ctx.sync.trigger_sync();
+            move |id, new_name| {
+                let res = ctx.store.borrow_mut().rename_image(id, &new_name);
+                match res {
+                    Ok(updated) => {
+                        ctx.toast(&format!("Renamed to {}", updated.filename));
+                        ctx.reload_images();
+                        ctx.sync.trigger_sync();
+                    }
+                    Err(e) => ctx.toast(&format!("Rename failed: {e}")),
                 }
-                Err(e) => ctx.toast(&format!("Rename failed: {e}")),
             }
         },
         {
@@ -2196,15 +2226,20 @@ pub fn build_ui(app: &adw::Application) {
                     return glib::Propagation::Stop;
                 }
             }
-            let focused_rec = c.focused_image.borrow().clone();
-            if let Some(rec) = focused_rec {
-                let ins = c.inspector.borrow().clone();
-                if let Some(ins) = ins {
-                    let channels = c.channels.borrow().clone();
-                    ins.set_image(Some(rec), &channels);
-                    c.set_inspector_visible(true);
-                    ins.begin_inline_rename();
-                    return glib::Propagation::Stop;
+            let in_lightbox = c.content_stack.visible_child_name().as_deref() == Some("lightbox");
+            let has_selected_image = !c.selected_images.borrow().is_empty();
+            let inspector_open = c.inspector_split.shows_sidebar();
+            if in_lightbox || has_selected_image || inspector_open {
+                let focused_rec = c.focused_image.borrow().clone();
+                if let Some(rec) = focused_rec {
+                    let ins = c.inspector.borrow().clone();
+                    if let Some(ins) = ins {
+                        let channels = c.channels.borrow().clone();
+                        ins.set_image(Some(rec), &channels);
+                        c.set_inspector_visible(true);
+                        ins.begin_inline_rename();
+                        return glib::Propagation::Stop;
+                    }
                 }
             } else if let ActiveView::Channel(cid) = c.active_view.get() {
                 c.begin_inline_rename_channel(cid);
@@ -2352,7 +2387,7 @@ pub fn build_ui(app: &adw::Application) {
                 }
             }
         }
-        if key == gdk::Key::Escape {
+        if !editing_text && key == gdk::Key::Escape {
             let sel_len = c.selected_images.borrow().len();
             if c.select_mode.get() || sel_len > 1 {
                 c.select_mode.set(false);
