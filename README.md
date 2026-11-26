@@ -1,6 +1,6 @@
 # koma
 
-<p align="center"><img src="assets/banner.png" alt="koma"></p>
+<p align="center"><img src="assets/banner.svg" alt="koma"></p>
 
 ---
 
