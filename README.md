@@ -35,6 +35,7 @@ Download the latest build from the [Releases](https://github.com/gmdkaio/koma/re
 
 - **Android:** install the `.apk`.
 - **Linux:** extract the archive and run `install.sh`.
+- **Windows:** run `koma-setup.exe`.
 
 On first launch, sign in with Google. koma only touches the `koma` folder it creates in your Drive.
 

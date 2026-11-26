@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -87,6 +88,10 @@ struct DriveFileList {
 }
 
 pub fn default_client_config_path() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(appdata).join("koma/gdrive_client.json"));
+    }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
@@ -124,26 +129,35 @@ pub fn parse_client_json(raw: &str) -> Result<GDriveClientConfig, String> {
 }
 
 impl GDriveClientConfig {
+    fn from_parts(id: Option<&str>, secret: Option<&str>) -> Option<Self> {
+        let id = id?.trim();
+        (!id.is_empty()).then(|| Self {
+            client_id: id.to_string(),
+            client_secret: secret.unwrap_or_default().trim().to_string(),
+        })
+    }
+
     pub fn load() -> Result<Self, String> {
-        if let Ok(id) = std::env::var("KOMA_GDRIVE_CLIENT_ID")
-            && !id.trim().is_empty()
-        {
-            return Ok(Self {
-                client_id: id.trim().to_string(),
-                client_secret: std::env::var("KOMA_GDRIVE_CLIENT_SECRET")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-            });
+        let env_id = std::env::var("KOMA_GDRIVE_CLIENT_ID").ok();
+        let env_secret = std::env::var("KOMA_GDRIVE_CLIENT_SECRET").ok();
+        if let Some(cfg) = Self::from_parts(env_id.as_deref(), env_secret.as_deref()) {
+            return Ok(cfg);
         }
         let path = default_client_config_path()?;
-        let raw = fs::read_to_string(&path).map_err(|_| {
-            format!(
-                "Google Drive OAuth client not configured (import JSON or save to {})",
-                path.display()
-            )
-        })?;
-        parse_client_json(&raw)
+        if let Ok(raw) = fs::read_to_string(&path) {
+            return parse_client_json(&raw);
+        }
+        // release builds bake the desktop client in so users only have to sign in.
+        if let Some(cfg) = Self::from_parts(
+            option_env!("KOMA_GDRIVE_CLIENT_ID"),
+            option_env!("KOMA_GDRIVE_CLIENT_SECRET"),
+        ) {
+            return Ok(cfg);
+        }
+        Err(format!(
+            "Google Drive OAuth client not configured (import JSON or save to {})",
+            path.display()
+        ))
     }
 
     pub fn is_configured() -> bool {
@@ -762,10 +776,22 @@ fn save_tokens(data_root: &Path, tokens: &TokenState) -> Result<(), String> {
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(path, bytes).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    #[cfg(unix)]
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     Ok(())
 }
 
+#[cfg(windows)]
+fn open_in_browser(url: &str) -> Result<(), String> {
+    // cmd's `start` would split the url at each `&`.
+    Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn()
+        .map_err(|e| format!("failed to launch browser: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
 fn open_in_browser(url: &str) -> Result<(), String> {
     Command::new("xdg-open")
         .arg(url)
@@ -787,9 +813,7 @@ fn escape_query(val: &str) -> String {
 
 fn random_hex(num_bytes: usize) -> Result<String, String> {
     let mut buf = vec![0u8; num_bytes];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
-        .map_err(|e| format!("failed to read /dev/urandom: {e}"))?;
+    getrandom::getrandom(&mut buf).map_err(|e| format!("failed to get random bytes: {e}"))?;
     let mut out = String::with_capacity(num_bytes * 2);
     for b in buf {
         out.push_str(&format!("{b:02x}"));

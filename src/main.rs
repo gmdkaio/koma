@@ -1,3 +1,6 @@
+// release builds skip the console window; debug keeps it for logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod importer;
 mod media;
 mod storage;

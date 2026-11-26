@@ -1234,6 +1234,17 @@ pub fn build_ui(app: &adw::Application) {
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_USER + 1,
         );
+        // windows has no compositor blur, so the glass shell would show the desktop through.
+        #[cfg(windows)]
+        {
+            let opaque = gtk4::CssProvider::new();
+            opaque.load_from_string("window.koma-window { background-image: image(var(--k-bg)); }");
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &opaque,
+                gtk4::STYLE_PROVIDER_PRIORITY_USER + 2,
+            );
+        }
         monitor
     } else {
         None
@@ -2493,6 +2504,14 @@ pub fn build_ui(app: &adw::Application) {
     });
 
     ctx.reload_all();
+    let start_view = match ctx.store.borrow().get_setting("start_view").as_deref() {
+        Some("throwaway") => Some(ActiveView::Throwaway),
+        Some("files") => Some(ActiveView::Files),
+        _ => None,
+    };
+    if let Some(view) = start_view {
+        ctx.select_view(view);
+    }
     window.present();
 
     // Wayland/niri activates the surface asynchronously after present(), so defer canvas focus.
@@ -2636,6 +2655,45 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
     }
     root.append(&theme_grid);
 
+    let start_heading = gtk4::Label::builder()
+        .label("START PAGE")
+        .xalign(0.0)
+        .css_classes(["koma-section-label"])
+        .build();
+    root.append(&start_heading);
+
+    let current_start = ctx
+        .store
+        .borrow()
+        .get_setting("start_view")
+        .unwrap_or_else(|| "home".to_string());
+    let start_row = gtk4::Box::builder()
+        .orientation(gtk4::Orientation::Horizontal)
+        .spacing(6)
+        .homogeneous(true)
+        .build();
+    let mut start_head: Option<gtk4::ToggleButton> = None;
+    for (id, label) in [("home", "Home"), ("throwaway", "Throwaway"), ("files", "Files")] {
+        let btn = gtk4::ToggleButton::builder()
+            .label(label)
+            .active(current_start == id)
+            .css_classes(["flat", "koma-theme-btn"])
+            .build();
+        if let Some(ref head) = start_head {
+            btn.set_group(Some(head));
+        } else {
+            start_head = Some(btn.clone());
+        }
+        let ctx_s = ctx.clone();
+        btn.connect_toggled(move |b| {
+            if b.is_active() {
+                let _ = ctx_s.store.borrow().set_setting("start_view", id);
+            }
+        });
+        start_row.append(&btn);
+    }
+    root.append(&start_row);
+
     let sep1 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     sep1.add_css_class("koma-switcher-sep");
     root.append(&sep1);
@@ -2698,7 +2756,10 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
         root.append(&import_btn);
 
         let hint = gtk4::Label::builder()
-            .label("Desktop OAuth JSON -> ~/.config/koma/gdrive_client.json")
+            .label(match gdrive::default_client_config_path() {
+                Ok(p) => format!("Desktop OAuth JSON -> {}", p.display()),
+                Err(_) => "Desktop OAuth JSON".to_string(),
+            })
             .xalign(0.0)
             .wrap(true)
             .max_width_chars(34)
@@ -2719,14 +2780,17 @@ fn show_settings_popover(anchor: &gtk4::Button, ctx: &Rc<AppCtx>) {
         });
         root.append(&connect_btn);
 
-        let replace_btn = gtk4::Button::builder()
-            .label("Replace Client JSON")
-            .css_classes(["flat", "koma-action-subtle"])
-            .build();
-        let ctx_i = ctx.clone();
-        let pop_i = popover.clone();
-        replace_btn.connect_clicked(move |_| import_json_dialog(ctx_i.clone(), pop_i.clone()));
-        root.append(&replace_btn);
+        // baked builds have no json to replace.
+        if gdrive::default_client_config_path().is_ok_and(|p| p.is_file()) {
+            let replace_btn = gtk4::Button::builder()
+                .label("Replace Client JSON")
+                .css_classes(["flat", "koma-action-subtle"])
+                .build();
+            let ctx_i = ctx.clone();
+            let pop_i = popover.clone();
+            replace_btn.connect_clicked(move |_| import_json_dialog(ctx_i.clone(), pop_i.clone()));
+            root.append(&replace_btn);
+        }
     } else {
         let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         let sync_now_btn = gtk4::Button::builder()

@@ -115,6 +115,10 @@ pub struct Store {
 }
 
 pub fn default_data_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(local).join("koma"));
+    }
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
         && !xdg.is_empty()
     {
