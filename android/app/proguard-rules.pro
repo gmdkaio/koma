@@ -1,0 +1,6 @@
+-keepattributes *Annotation*, InnerClasses, Signature
+-keep class dev.koma.app.data.** { *; }
+-keepclassmembers class dev.koma.app.data.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn kotlinx.serialization.**

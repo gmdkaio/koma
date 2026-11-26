@@ -1,3 +1,10 @@
 docs/
 target/
 AGENTS.md
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.keystore
+*.jks
