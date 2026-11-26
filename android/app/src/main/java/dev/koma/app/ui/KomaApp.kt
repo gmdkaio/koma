@@ -134,6 +134,9 @@ fun KomaApp(
                 channels = state.channels,
                 imageLoader = viewModel.imageLoader,
                 onDismiss = viewModel::dismissIncomingShare,
+                onSelectBucket = { bucket ->
+                    viewModel.uploadToBucket(bucket, state.pendingShareUris)
+                },
                 onSelectChannel = { ch ->
                     viewModel.uploadUrisToChannel(ch, state.pendingShareUris)
                 },

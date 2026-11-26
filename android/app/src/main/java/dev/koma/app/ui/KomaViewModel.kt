@@ -17,6 +17,8 @@ import dev.koma.app.data.CatalogCache
 import dev.koma.app.data.DriveChannel
 import dev.koma.app.data.DriveImage
 import dev.koma.app.data.DriveRepository
+import dev.koma.app.data.DriveTransferFile
+import dev.koma.app.data.FileBucket
 import dev.koma.app.data.KomaTheme
 import dev.koma.app.data.MediaExport
 import dev.koma.app.data.SignInOutcome
@@ -41,8 +43,11 @@ data class KomaUiState(
     val activeTab: ActiveTab = ActiveTab.Home,
     val sortOrder: SortOrder = SortOrder.NEWEST,
     val rootFolderId: String? = null,
+    val throwawayFolderId: String? = null,
+    val filesFolderId: String? = null,
     val channels: List<DriveChannel> = emptyList(),
     val allImages: List<DriveImage> = emptyList(),
+    val transferFiles: List<DriveTransferFile> = emptyList(),
     val selectedIds: Set<String> = emptySet(),
     val viewerIndex: Int? = null,
     val pendingShareUris: List<Uri> = emptyList(),
@@ -50,10 +55,17 @@ data class KomaUiState(
     val pendingDeleteIds: List<String> = emptyList(),
     val showCreateChannel: Boolean = false,
 ) {
+    val throwawayFiles: List<DriveTransferFile>
+        get() = transferFiles.filter { it.bucket == FileBucket.THROWAWAY }
+
+    val savedFiles: List<DriveTransferFile>
+        get() = transferFiles.filter { it.bucket == FileBucket.FILES }
+
     val visibleImages: List<DriveImage>
         get() {
             val filtered = when (activeTab) {
                 ActiveTab.Home -> allImages
+                ActiveTab.Throwaway, ActiveTab.Files -> emptyList()
                 is ActiveTab.Channel -> allImages.filter { it.channelId == activeTab.id }
             }
             return when (sortOrder) {
@@ -456,6 +468,157 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun uploadToBucket(bucket: FileBucket, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    pendingShareUris = emptyList(),
+                    busyMessage = "Uploading ${uris.size} file(s) to ${bucket.label}...",
+                )
+            }
+            runCatching {
+                val rootId = _uiState.value.rootFolderId ?: repo.syncCatalog().rootFolderId
+                val existingFolderId = when (bucket) {
+                    FileBucket.THROWAWAY -> _uiState.value.throwawayFolderId
+                    FileBucket.FILES -> _uiState.value.filesFolderId
+                }
+                val folderId = existingFolderId ?: repo.ensureSpecialFolder(rootId, bucket)
+                val added = repo.uploadTransferFiles(
+                    folderId = folderId,
+                    bucket = bucket,
+                    uris = uris,
+                    contentResolver = getApplication<Application>().contentResolver,
+                )
+                Triple(rootId, folderId, added)
+            }.onSuccess { (rootId, folderId, added) ->
+                val merged = (added + _uiState.value.transferFiles)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.createdAtMillis }
+                _uiState.update { st ->
+                    val nextThrowId = if (bucket == FileBucket.THROWAWAY) folderId else st.throwawayFolderId
+                    val nextFilesId = if (bucket == FileBucket.FILES) folderId else st.filesFolderId
+                    repo.saveCachedCatalog(
+                        CatalogCache(
+                            rootFolderId = rootId,
+                            channels = st.channels,
+                            images = st.allImages,
+                            throwawayFolderId = nextThrowId,
+                            filesFolderId = nextFilesId,
+                            transferFiles = merged,
+                        )
+                    )
+                    st.copy(
+                        rootFolderId = rootId,
+                        throwawayFolderId = nextThrowId,
+                        filesFolderId = nextFilesId,
+                        transferFiles = merged,
+                        busyMessage = null,
+                    )
+                }
+                toast("Uploaded ${added.size} file(s) to ${bucket.label}")
+            }.onFailure { err ->
+                _uiState.update { it.copy(busyMessage = null) }
+                toast(err.message ?: "Upload failed")
+            }
+        }
+    }
+
+    fun receiveTransferFile(file: DriveTransferFile, shareInsteadOfSave: Boolean) {
+        val autoDelete = file.bucket == FileBucket.THROWAWAY
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyMessage = "Downloading ${file.filename}...") }
+            runCatching {
+                val local = repo.downloadTransferFile(file)
+                if (shareInsteadOfSave) {
+                    MediaExport.shareTransferFile(getApplication(), file, local)
+                } else {
+                    val saved = MediaExport.saveFileToDownloads(getApplication(), file, local)
+                    if (!saved) error("Could not save to Downloads/koma")
+                }
+                if (autoDelete) {
+                    repo.deleteTransferFile(file.id)
+                }
+            }.onSuccess {
+                if (autoDelete) {
+                    removeLocalTransferFile(file.id)
+                    toast(
+                        if (shareInsteadOfSave) "Shared & cleared from Throwaway"
+                        else "Saved to Downloads/koma & cleared from Throwaway"
+                    )
+                } else if (!shareInsteadOfSave) {
+                    toast("Saved ${file.filename} to Downloads/koma")
+                }
+                _uiState.update { it.copy(busyMessage = null) }
+            }.onFailure { err ->
+                _uiState.update { it.copy(busyMessage = null) }
+                toast(err.message ?: "Download failed")
+            }
+        }
+    }
+
+    fun refreshTransfersOnly() {
+        val rootId = _uiState.value.rootFolderId ?: return
+        if (!auth.isSignedIn || _uiState.value.isSyncing) return
+        viewModelScope.launch {
+            runCatching { repo.syncTransfersOnly(rootId) }
+                .onSuccess { (throwId, filesId, transfers) ->
+                    _uiState.update { st ->
+                        repo.saveCachedCatalog(
+                            CatalogCache(
+                                rootFolderId = rootId,
+                                channels = st.channels,
+                                images = st.allImages,
+                                throwawayFolderId = throwId,
+                                filesFolderId = filesId,
+                                transferFiles = transfers,
+                            )
+                        )
+                        st.copy(
+                            throwawayFolderId = throwId,
+                            filesFolderId = filesId,
+                            transferFiles = transfers,
+                        )
+                    }
+                }
+        }
+    }
+
+    fun deleteTransferFile(file: DriveTransferFile) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyMessage = "Deleting ${file.filename}...") }
+            runCatching { repo.deleteTransferFile(file.id) }
+                .onSuccess {
+                    removeLocalTransferFile(file.id)
+                    _uiState.update { it.copy(busyMessage = null) }
+                    toast("Deleted ${file.filename}")
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyMessage = null) }
+                    toast(err.message ?: "Delete failed")
+                }
+        }
+    }
+
+    private fun removeLocalTransferFile(fileId: String) {
+        _uiState.update { st ->
+            val remaining = st.transferFiles.filterNot { it.id == fileId }
+            st.rootFolderId?.let { rootId ->
+                repo.saveCachedCatalog(
+                    CatalogCache(
+                        rootFolderId = rootId,
+                        channels = st.channels,
+                        images = st.allImages,
+                        throwawayFolderId = st.throwawayFolderId,
+                        filesFolderId = st.filesFolderId,
+                        transferFiles = remaining,
+                    )
+                )
+            }
+            st.copy(transferFiles = remaining)
+        }
+    }
+
     fun signOut() {
         auth.signOut()
         repo.clearCache()
@@ -464,8 +627,11 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
                 isSignedIn = false,
                 isSyncing = false,
                 rootFolderId = null,
+                throwawayFolderId = null,
+                filesFolderId = null,
                 channels = emptyList(),
                 allImages = emptyList(),
+                transferFiles = emptyList(),
                 selectedIds = emptySet(),
                 viewerIndex = null,
                 activeTab = ActiveTab.Home,
@@ -485,13 +651,16 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
     private fun applyCatalog(catalog: CatalogCache) {
         _uiState.update { state ->
             val validTab = when (val tab = state.activeTab) {
-                ActiveTab.Home -> ActiveTab.Home
+                ActiveTab.Home, ActiveTab.Throwaway, ActiveTab.Files -> tab
                 is ActiveTab.Channel -> if (catalog.channels.any { it.id == tab.id }) tab else ActiveTab.Home
             }
             state.copy(
                 rootFolderId = catalog.rootFolderId,
+                throwawayFolderId = catalog.throwawayFolderId,
+                filesFolderId = catalog.filesFolderId,
                 channels = catalog.channels,
                 allImages = catalog.images,
+                transferFiles = catalog.transferFiles,
                 activeTab = validTab,
             )
         }
@@ -505,7 +674,16 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
             .sortedWith(compareByDescending<DriveChannel> { it.imageCount }.thenBy { it.slug })
         val rootId = state.rootFolderId
         if (rootId != null) {
-            repo.saveCachedCatalog(CatalogCache(rootId, nextChannels, nextImages))
+            repo.saveCachedCatalog(
+                CatalogCache(
+                    rootFolderId = rootId,
+                    channels = nextChannels,
+                    images = nextImages,
+                    throwawayFolderId = state.throwawayFolderId,
+                    filesFolderId = state.filesFolderId,
+                    transferFiles = state.transferFiles,
+                )
+            )
         }
         _uiState.update {
             it.copy(

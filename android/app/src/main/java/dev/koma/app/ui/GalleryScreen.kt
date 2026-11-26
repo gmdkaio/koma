@@ -43,11 +43,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Refresh
@@ -97,7 +99,10 @@ import coil3.size.Size
 import dev.koma.app.R
 import dev.koma.app.data.ActiveTab
 import dev.koma.app.data.DriveImage
+import dev.koma.app.data.DriveTransferFile
+import dev.koma.app.data.FileBucket
 import dev.koma.app.data.KomaTheme
+import dev.koma.app.data.formatBytes
 import dev.koma.app.ui.theme.LocalKomaPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -128,6 +133,19 @@ fun GalleryScreen(
         while (isActive && autoScrollSpeed != 0f) {
             gridState.scrollBy(autoScrollSpeed)
             delay(16L)
+        }
+    }
+
+    val docPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val bucket = when (state.activeTab) {
+                ActiveTab.Throwaway -> FileBucket.THROWAWAY
+                ActiveTab.Files -> FileBucket.FILES
+                else -> FileBucket.FILES
+            }
+            viewModel.uploadToBucket(bucket, uris)
         }
     }
 
@@ -177,6 +195,38 @@ fun GalleryScreen(
                 .fillMaxSize()
                 .background(palette.bg),
         ) {
+            val activeBucket = when (state.activeTab) {
+                ActiveTab.Throwaway -> FileBucket.THROWAWAY
+                ActiveTab.Files -> FileBucket.FILES
+                else -> null
+            }
+            if (activeBucket != null) {
+                LaunchedEffect(activeBucket) {
+                    viewModel.refreshTransfersOnly()
+                    if (activeBucket == FileBucket.THROWAWAY) {
+                        while (isActive) {
+                            delay(5_000L)
+                            viewModel.refreshTransfersOnly()
+                        }
+                    }
+                }
+                val bucketFiles = if (activeBucket == FileBucket.THROWAWAY) {
+                    state.throwawayFiles
+                } else {
+                    state.savedFiles
+                }
+                FileBucketContent(
+                    bucket = activeBucket,
+                    files = bucketFiles,
+                    isSyncing = state.isSyncing,
+                    onMenu = { scope.launch { drawerState.open() } },
+                    onUpload = { docPicker.launch(arrayOf("*/*")) },
+                    onSync = viewModel::syncNow,
+                    onSave = { viewModel.receiveTransferFile(it, shareInsteadOfSave = false) },
+                    onShare = { viewModel.receiveTransferFile(it, shareInsteadOfSave = true) },
+                    onDelete = viewModel::deleteTransferFile,
+                )
+            } else {
             Column(modifier = Modifier.fillMaxSize()) {
                 if (selecting) {
                     SelectionTopBar(
@@ -309,6 +359,7 @@ fun GalleryScreen(
                         }
                     }
                 }
+            }
             }
 
             AnimatedVisibility(
@@ -692,37 +743,27 @@ private fun ChannelDrawer(
             }
 
             val homeActive = state.activeTab is ActiveTab.Home
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 2.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (homeActive) palette.accent.copy(alpha = 0.16f) else Color.Transparent)
-                    .clickable { onSelectTab(ActiveTab.Home) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Rounded.Home,
-                    contentDescription = null,
-                    tint = if (homeActive) palette.fg else palette.muted,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = "Home",
-                    color = palette.fg,
-                    fontSize = 14.sp,
-                    fontWeight = if (homeActive) FontWeight.SemiBold else FontWeight.Normal,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "${state.allImages.size}",
-                    color = palette.muted,
-                    fontSize = 11.5.sp,
-                    fontFamily = FontFamily.Monospace,
-                )
-            }
+            DrawerNavItem(
+                icon = Icons.Rounded.Home,
+                label = "Home",
+                count = state.allImages.size,
+                active = homeActive,
+                onClick = { onSelectTab(ActiveTab.Home) },
+            )
+            DrawerNavItem(
+                icon = Icons.AutoMirrored.Rounded.Send,
+                label = "Throwaway",
+                count = state.throwawayFiles.size,
+                active = state.activeTab is ActiveTab.Throwaway,
+                onClick = { onSelectTab(ActiveTab.Throwaway) },
+            )
+            DrawerNavItem(
+                icon = Icons.Rounded.FolderOpen,
+                label = "Files",
+                count = state.savedFiles.size,
+                active = state.activeTab is ActiveTab.Files,
+                onClick = { onSelectTab(ActiveTab.Files) },
+            )
 
             Spacer(Modifier.height(10.dp))
 
@@ -829,6 +870,211 @@ private fun ChannelDrawer(
                         tint = palette.muted,
                         modifier = Modifier.size(19.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerNavItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    count: Int,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = LocalKomaPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) palette.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (active) palette.fg else palette.muted,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = label,
+            color = palette.fg,
+            fontSize = 14.sp,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f),
+        )
+        if (count > 0) {
+            Text(
+                text = "$count",
+                color = palette.muted,
+                fontSize = 11.5.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FileBucketContent(
+    bucket: FileBucket,
+    files: List<DriveTransferFile>,
+    isSyncing: Boolean,
+    onMenu: () -> Unit,
+    onUpload: () -> Unit,
+    onSync: () -> Unit,
+    onSave: (DriveTransferFile) -> Unit,
+    onShare: (DriveTransferFile) -> Unit,
+    onDelete: (DriveTransferFile) -> Unit,
+) {
+    val palette = LocalKomaPalette.current
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(palette.surface)
+                .statusBarsPadding(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onMenu) {
+                    Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = palette.fg)
+                }
+                Text(
+                    text = bucket.label,
+                    color = palette.fg,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "${files.size}",
+                    color = palette.muted,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onUpload) {
+                    Icon(Icons.Rounded.Add, contentDescription = "Upload files", tint = palette.fg)
+                }
+                IconButton(onClick = onSync, enabled = !isSyncing) {
+                    Icon(
+                        Icons.Rounded.Refresh,
+                        contentDescription = "Refresh",
+                        tint = if (isSyncing) palette.syncBusy else palette.fg,
+                    )
+                }
+            }
+            HorizontalDivider(color = palette.border, thickness = 1.dp)
+        }
+
+        Text(
+            text = if (bucket == FileBucket.THROWAWAY) {
+                "One-shot inbox: saving or sharing a file removes it from Drive automatically."
+            } else {
+                "Persistent work & general files synced with your PC."
+            },
+            color = palette.muted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        )
+
+        if (files.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "Tap + to pick any file, or upload from PC.",
+                    color = palette.muted,
+                    fontSize = 13.5.sp,
+                )
+            }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(files, key = { it.id }) { file ->
+                    Surface(
+                        color = palette.surface,
+                        contentColor = palette.fg,
+                        shape = RoundedCornerShape(9.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, palette.border, RoundedCornerShape(9.dp)),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(palette.accent.copy(alpha = 0.16f))
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                            ) {
+                                Text(
+                                    text = file.extBadge,
+                                    color = palette.fg,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = file.filename,
+                                    color = palette.fg,
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = formatBytes(file.sizeBytes),
+                                    color = palette.muted,
+                                    fontSize = 11.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                            IconButton(onClick = { onSave(file) }) {
+                                Icon(
+                                    Icons.Rounded.Download,
+                                    contentDescription = if (bucket == FileBucket.THROWAWAY) "Save & Clear" else "Save",
+                                    tint = palette.fg,
+                                )
+                            }
+                            IconButton(onClick = { onShare(file) }) {
+                                Icon(
+                                    Icons.Rounded.Share,
+                                    contentDescription = "Share",
+                                    tint = palette.fg,
+                                )
+                            }
+                            IconButton(onClick = { onDelete(file) }) {
+                                Icon(
+                                    Icons.Rounded.DeleteOutline,
+                                    contentDescription = "Delete",
+                                    tint = palette.danger,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -51,6 +51,7 @@ import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import dev.koma.app.R
 import dev.koma.app.data.DriveChannel
+import dev.koma.app.data.FileBucket
 import dev.koma.app.data.KomaTheme
 import dev.koma.app.ui.theme.LocalKomaPalette
 
@@ -295,6 +296,7 @@ fun IncomingShareSheet(
     channels: List<DriveChannel>,
     imageLoader: ImageLoader,
     onDismiss: () -> Unit,
+    onSelectBucket: (FileBucket) -> Unit,
     onSelectChannel: (DriveChannel) -> Unit,
     onCreateAndUpload: (String) -> Unit,
 ) {
@@ -312,11 +314,43 @@ fun IncomingShareSheet(
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
             Text(
-                text = "Save ${uris.size} image(s) to koma",
+                text = "Save ${uris.size} item(s) to koma",
                 color = palette.fg,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
             )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Surface(
+                    onClick = { onSelectBucket(FileBucket.THROWAWAY) },
+                    color = palette.accent,
+                    contentColor = palette.accentFg,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text("Throwaway", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                        Text("Auto-deletes on PC", fontSize = 11.sp, color = palette.accentFg.copy(alpha = 0.8f))
+                    }
+                }
+                Surface(
+                    onClick = { onSelectBucket(FileBucket.FILES) },
+                    color = palette.surfaceElevated,
+                    contentColor = palette.fg,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .border(1.dp, palette.border, RoundedCornerShape(8.dp)),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text("Files", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                        Text("Keep in Drive", fontSize = 11.sp, color = palette.muted)
+                    }
+                }
+            }
             Spacer(Modifier.height(10.dp))
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),

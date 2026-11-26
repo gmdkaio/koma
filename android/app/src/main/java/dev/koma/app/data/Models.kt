@@ -40,10 +40,36 @@ data class DriveImage(
 }
 
 @Serializable
+enum class FileBucket(val folderName: String, val label: String) {
+    THROWAWAY(".throwaway", "Throwaway"),
+    FILES(".files", "Files"),
+}
+
+@Immutable
+@Serializable
+data class DriveTransferFile(
+    val id: String,
+    val bucket: FileBucket,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long = 0L,
+    val createdAtMillis: Long = 0L,
+) {
+    val extBadge: String
+        get() = filename.substringAfterLast('.', "")
+            .uppercase()
+            .takeIf { it.isNotEmpty() && it.length <= 5 }
+            ?: "FILE"
+}
+
+@Serializable
 data class CatalogCache(
     val rootFolderId: String,
     val channels: List<DriveChannel>,
     val images: List<DriveImage>,
+    val throwawayFolderId: String? = null,
+    val filesFolderId: String? = null,
+    val transferFiles: List<DriveTransferFile> = emptyList(),
 )
 
 enum class KomaTheme(val key: String, val label: String) {
@@ -62,6 +88,8 @@ enum class SortOrder(val label: String) {
 
 sealed interface ActiveTab {
     data object Home : ActiveTab
+    data object Throwaway : ActiveTab
+    data object Files : ActiveTab
     data class Channel(val id: String) : ActiveTab
 }
 

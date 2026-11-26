@@ -1032,3 +1032,33 @@ window.koma-window.theme-paper .koma-danger-btn:hover {
     border-color: var(--k-accent);
     opacity: 1;
 }
+
+/* === THROWAWAY & FILES ROWS === */
+
+.koma-transfer-row {
+    background-color: color-mix(in srgb, currentColor 3.5%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+    border-radius: 7px;
+    padding: 10px 12px;
+}
+
+.koma-ext-badge {
+    font-family: "JetBrainsMono Nerd Font", "Adwaita Mono", monospace;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 7px;
+    min-width: 38px;
+    border-radius: 5px;
+    background-color: color-mix(in srgb, var(--k-accent) 16%, transparent);
+    color: var(--k-accent-text);
+}
+
+window.koma-window.theme-paper .koma-transfer-row {
+    background-color: rgba(56, 38, 26, 0.06);
+    border-color: rgba(56, 38, 26, 0.16);
+}
+
+window.koma-window.theme-paper .koma-ext-badge {
+    background-color: rgba(61, 40, 28, 0.14);
+    color: #261b14;
+}

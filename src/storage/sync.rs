@@ -1,14 +1,37 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::storage::gdrive::{
-    GDriveBackend, authorize_interactive, clear_saved_tokens, has_saved_tokens,
+    GDriveBackend, TransferFile, authorize_interactive, clear_saved_tokens, has_saved_tokens,
 };
 use crate::storage::{RemoteFile, StorageBackend};
 use crate::store::{Store, slugify};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferBucket {
+    Throwaway,
+    Files,
+}
+
+impl TransferBucket {
+    pub fn folder_name(self) -> &'static str {
+        match self {
+            Self::Throwaway => ".throwaway",
+            Self::Files => ".files",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Throwaway => "Throwaway",
+            Self::Files => "Files",
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SyncReport {
@@ -39,12 +62,39 @@ pub enum SyncEvent {
     StatusChanged(SyncStatus),
     SyncFinished(SyncReport),
     AuthFinished(Result<(), String>),
+    TransfersUpdated {
+        throwaway: Vec<TransferFile>,
+        files: Vec<TransferFile>,
+    },
+    TransferToast(String),
 }
 
 enum SyncCmd {
     TriggerSync,
     StartOAuth,
     Disconnect,
+    RefreshTransfers,
+    UploadTransfers {
+        bucket: TransferBucket,
+        paths: Vec<PathBuf>,
+    },
+    UploadTransferBytes {
+        bucket: TransferBucket,
+        filename: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    },
+    DownloadTransfer {
+        bucket: TransferBucket,
+        file: TransferFile,
+        dest_dir: PathBuf,
+        auto_delete: bool,
+    },
+    DeleteTransfer {
+        bucket: TransferBucket,
+        remote_id: String,
+        filename: String,
+    },
     Shutdown,
 }
 
@@ -81,6 +131,52 @@ impl SyncHandle {
         let _ = self.tx.send(SyncCmd::Disconnect);
     }
 
+    pub fn refresh_transfers(&self) {
+        let _ = self.tx.send(SyncCmd::RefreshTransfers);
+    }
+
+    pub fn upload_transfers(&self, bucket: TransferBucket, paths: Vec<PathBuf>) {
+        let _ = self.tx.send(SyncCmd::UploadTransfers { bucket, paths });
+    }
+
+    pub fn upload_transfer_bytes(
+        &self,
+        bucket: TransferBucket,
+        filename: String,
+        mime_type: String,
+        bytes: Vec<u8>,
+    ) {
+        let _ = self.tx.send(SyncCmd::UploadTransferBytes {
+            bucket,
+            filename,
+            mime_type,
+            bytes,
+        });
+    }
+
+    pub fn download_transfer(
+        &self,
+        bucket: TransferBucket,
+        file: TransferFile,
+        dest_dir: PathBuf,
+        auto_delete: bool,
+    ) {
+        let _ = self.tx.send(SyncCmd::DownloadTransfer {
+            bucket,
+            file,
+            dest_dir,
+            auto_delete,
+        });
+    }
+
+    pub fn delete_transfer(&self, bucket: TransferBucket, remote_id: String, filename: String) {
+        let _ = self.tx.send(SyncCmd::DeleteTransfer {
+            bucket,
+            remote_id,
+            filename,
+        });
+    }
+
     pub fn poll_events(&self) -> Vec<SyncEvent> {
         let mut out = Vec::new();
         while let Ok(evt) = self.rx.try_recv() {
@@ -111,8 +207,9 @@ fn worker_loop(data_root: PathBuf, cmd_rx: Receiver<SyncCmd>, evt_tx: Sender<Syn
         None
     };
 
-    if backend.is_some() {
-        run_sync_pass(&mut store, backend.as_ref().unwrap(), &evt_tx);
+    if let Some(ref b) = backend {
+        run_sync_pass(&mut store, b, &evt_tx);
+        refresh_transfers_now(b, &evt_tx, None);
     } else {
         let _ = evt_tx.send(SyncEvent::StatusChanged(SyncStatus::LocalOnly));
     }
@@ -142,6 +239,7 @@ fn worker_loop(data_root: PathBuf, cmd_rx: Receiver<SyncCmd>, evt_tx: Sender<Syn
                 }
                 if let Some(ref b) = backend {
                     run_sync_pass(&mut store, b, &evt_tx);
+                    refresh_transfers_now(b, &evt_tx, None);
                     last_poll = Instant::now();
                 } else {
                     let _ = evt_tx.send(SyncEvent::StatusChanged(SyncStatus::LocalOnly));
@@ -155,7 +253,10 @@ fn worker_loop(data_root: PathBuf, cmd_rx: Receiver<SyncCmd>, evt_tx: Sender<Syn
                     Ok(b) => {
                         backend = Some(b);
                         let _ = evt_tx.send(SyncEvent::AuthFinished(Ok(())));
-                        run_sync_pass(&mut store, backend.as_ref().unwrap(), &evt_tx);
+                        if let Some(ref b) = backend {
+                            run_sync_pass(&mut store, b, &evt_tx);
+                            refresh_transfers_now(b, &evt_tx, None);
+                        }
                         last_poll = Instant::now();
                     }
                     Err(e) => {
@@ -168,18 +269,217 @@ fn worker_loop(data_root: PathBuf, cmd_rx: Receiver<SyncCmd>, evt_tx: Sender<Syn
                 backend = None;
                 let _ = clear_saved_tokens(&data_root);
                 let _ = store.clear_all_remote_links();
+                let _ = evt_tx.send(SyncEvent::TransfersUpdated {
+                    throwaway: Vec::new(),
+                    files: Vec::new(),
+                });
                 let _ = evt_tx.send(SyncEvent::StatusChanged(SyncStatus::LocalOnly));
+            }
+            Ok(SyncCmd::RefreshTransfers) => {
+                if backend.is_none() && has_saved_tokens(&data_root) {
+                    backend = GDriveBackend::open(data_root.clone()).ok();
+                }
+                if let Some(ref b) = backend {
+                    refresh_transfers_now(b, &evt_tx, None);
+                } else {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(
+                        "Connect Google Drive in Settings first".to_string(),
+                    ));
+                }
+            }
+            Ok(SyncCmd::UploadTransfers { bucket, paths }) => {
+                if backend.is_none() && has_saved_tokens(&data_root) {
+                    backend = GDriveBackend::open(data_root.clone()).ok();
+                }
+                let Some(ref b) = backend else {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(
+                        "Connect Google Drive in Settings first".to_string(),
+                    ));
+                    continue;
+                };
+                let mut ok = 0usize;
+                let mut last_err = None;
+                for path in &paths {
+                    match b.upload_special_file(bucket.folder_name(), path) {
+                        Ok(_) => ok += 1,
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                refresh_transfers_now(b, &evt_tx, None);
+                if ok > 0 {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                        "Uploaded {ok} file(s) to {}",
+                        bucket.label()
+                    )));
+                } else if let Some(err) = last_err {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(format!("Upload failed: {err}")));
+                }
+            }
+            Ok(SyncCmd::UploadTransferBytes {
+                bucket,
+                filename,
+                mime_type,
+                bytes,
+            }) => {
+                if backend.is_none() && has_saved_tokens(&data_root) {
+                    backend = GDriveBackend::open(data_root.clone()).ok();
+                }
+                let Some(ref b) = backend else {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(
+                        "Connect Google Drive in Settings first".to_string(),
+                    ));
+                    continue;
+                };
+                match b.upload_special_bytes(bucket.folder_name(), &filename, &mime_type, &bytes) {
+                    Ok(_) => {
+                        refresh_transfers_now(b, &evt_tx, None);
+                        let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                            "Uploaded {filename} to {}",
+                            bucket.label()
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = evt_tx.send(SyncEvent::TransferToast(format!("Upload failed: {e}")));
+                    }
+                }
+            }
+            Ok(SyncCmd::DownloadTransfer {
+                bucket,
+                file,
+                dest_dir,
+                auto_delete,
+            }) => {
+                let Some(ref b) = backend else {
+                    let _ = evt_tx.send(SyncEvent::TransferToast(
+                        "Connect Google Drive in Settings first".to_string(),
+                    ));
+                    continue;
+                };
+                match b.download_file(&file.remote_id) {
+                    Ok(bytes) => {
+                        if let Err(e) = fs::create_dir_all(&dest_dir) {
+                            let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                                "Could not create {}: {e}",
+                                dest_dir.display()
+                            )));
+                            continue;
+                        }
+                        let dest_path = unique_dest_path(&dest_dir, &file.filename);
+                        match fs::write(&dest_path, &bytes) {
+                            Ok(()) => {
+                                if auto_delete {
+                                    let _ = b.delete_item(&file.remote_id);
+                                    refresh_transfers_now(b, &evt_tx, Some(&file.remote_id));
+                                    let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                                        "Saved {} and cleared from {}",
+                                        dest_path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(&file.filename),
+                                        bucket.label()
+                                    )));
+                                } else {
+                                    let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                                        "Saved to {}",
+                                        dest_path.display()
+                                    )));
+                                }
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                                    "Write failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                            "Download failed: {e}"
+                        )));
+                    }
+                }
+            }
+            Ok(SyncCmd::DeleteTransfer {
+                bucket,
+                remote_id,
+                filename,
+            }) => {
+                let Some(ref b) = backend else { continue };
+                match b.delete_item(&remote_id) {
+                    Ok(()) => {
+                        refresh_transfers_now(b, &evt_tx, Some(&remote_id));
+                        let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                            "Deleted {filename} from {}",
+                            bucket.label()
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = evt_tx.send(SyncEvent::TransferToast(format!(
+                            "Delete failed: {e}"
+                        )));
+                    }
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if let Some(ref b) = backend
                     && last_poll.elapsed() >= poll_interval
                 {
                     run_sync_pass(&mut store, b, &evt_tx);
+                    refresh_transfers_now(b, &evt_tx, None);
                     last_poll = Instant::now();
                 }
             }
         }
     }
+}
+
+fn refresh_transfers_now(
+    backend: &GDriveBackend,
+    evt_tx: &Sender<SyncEvent>,
+    exclude_id: Option<&str>,
+) {
+    let mut throwaway = backend
+        .list_special_files(TransferBucket::Throwaway.folder_name())
+        .unwrap_or_default();
+    let mut files = backend
+        .list_special_files(TransferBucket::Files.folder_name())
+        .unwrap_or_default();
+    if let Some(skip) = exclude_id {
+        throwaway.retain(|f| f.remote_id != skip);
+        files.retain(|f| f.remote_id != skip);
+    }
+    let _ = evt_tx.send(SyncEvent::TransfersUpdated { throwaway, files });
+}
+
+fn unique_dest_path(dir: &Path, filename: &str) -> PathBuf {
+    let safe_name = Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("download.bin");
+    let first = dir.join(safe_name);
+    if !first.exists() {
+        return first;
+    }
+    let stem = Path::new(safe_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download");
+    let ext = Path::new(safe_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    for idx in 1..1000 {
+        let candidate = if ext.is_empty() {
+            dir.join(format!("{stem} ({idx})"))
+        } else {
+            dir.join(format!("{stem} ({idx}).{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
 }
 
 fn run_sync_pass(store: &mut Store, backend: &dyn StorageBackend, evt_tx: &Sender<SyncEvent>) {

@@ -86,4 +86,56 @@ object MediaExport {
         }
         context.startActivity(chooser)
     }
+
+    suspend fun saveFileToDownloads(
+        context: Context,
+        file: DriveTransferFile,
+        localFile: File,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, file.filename)
+                put(MediaStore.Downloads.MIME_TYPE, file.mimeType.ifBlank { "application/octet-stream" })
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/koma")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return@withContext false
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    localFile.inputStream().use { input -> input.copyTo(out) }
+                }
+                val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+                resolver.update(uri, done, null, null)
+                true
+            } catch (_: Throwable) {
+                resolver.delete(uri, null, null)
+                false
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "koma"
+            ).apply { mkdirs() }
+            localFile.copyTo(File(dir, file.filename), overwrite = true)
+            true
+        }
+    }
+
+    fun shareTransferFile(context: Context, file: DriveTransferFile, localFile: File) {
+        val authority = "${context.packageName}.fileprovider"
+        val uri = FileProvider.getUriForFile(context, authority, localFile)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = file.mimeType.ifBlank { "*/*" }
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri(file.filename, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val chooser = Intent.createChooser(intent, "Share ${file.filename}").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooser)
+    }
 }

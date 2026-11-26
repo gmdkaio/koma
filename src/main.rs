@@ -18,7 +18,7 @@ use crate::storage::gdrive::{GDriveBackend, authorize_interactive};
 use crate::storage::sync::sync_once;
 use crate::store::{Store, default_data_dir};
 
-const APP_ID: &str = "dev.koma.App";
+pub(crate) const APP_ID: &str = "dev.koma.App";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

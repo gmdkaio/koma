@@ -13,20 +13,32 @@ use gtk4::{gdk, gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
-use crate::storage::gdrive::{self, GDriveClientConfig};
-use crate::storage::sync::{SyncEvent, SyncHandle, SyncStatus};
+use crate::storage::gdrive::{self, GDriveClientConfig, TransferFile};
+use crate::storage::sync::{SyncEvent, SyncHandle, SyncStatus, TransferBucket};
 use crate::store::{Channel, ChannelSort, ImageRecord, ImageSort, Store, default_data_dir};
 use crate::ui::grid::{GridCanvas, NavDir};
 use crate::ui::inspector::InspectorPane;
 use crate::ui::lightbox::LightboxView;
-use crate::ui::media_util::{AsyncThumbLoader, ThumbCache, load_texture};
+use crate::ui::media_util::{AsyncThumbLoader, ThumbCache, format_bytes, load_texture};
 use crate::ui::switcher::{SwitcherAction, SwitcherMode, present_switcher};
 use crate::zip::write_stored_zip;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActiveView {
     Home,
+    Throwaway,
+    Files,
     Channel(i64),
+}
+
+impl ActiveView {
+    fn transfer_bucket(self) -> Option<TransferBucket> {
+        match self {
+            Self::Throwaway => Some(TransferBucket::Throwaway),
+            Self::Files => Some(TransferBucket::Files),
+            _ => None,
+        }
+    }
 }
 
 struct AppCtx {
@@ -56,6 +68,10 @@ struct AppCtx {
     sync_dot: gtk4::Box,
     sync_label: gtk4::Label,
     home_row_btn: gtk4::Button,
+    throwaway_row_btn: gtk4::Button,
+    throwaway_count_lbl: gtk4::Label,
+    files_row_btn: gtk4::Button,
+    files_count_lbl: gtk4::Label,
     new_ch_revealer: gtk4::Revealer,
     new_ch_entry: gtk4::Entry,
     editing_channel_id: Cell<Option<i64>>,
@@ -83,6 +99,14 @@ struct AppCtx {
     grid_canvas: RefCell<Option<Rc<GridCanvas>>>,
     inspector: RefCell<Option<Rc<InspectorPane>>>,
     lightbox: RefCell<Option<Rc<LightboxView>>>,
+
+    // Throwaway & Files state + widgets
+    throwaway_files: RefCell<Vec<TransferFile>>,
+    saved_files: RefCell<Vec<TransferFile>>,
+    transfer_title: gtk4::Label,
+    transfer_sub: gtk4::Label,
+    transfer_banner: gtk4::Label,
+    transfer_list: gtk4::Box,
 }
 
 impl AppCtx {
@@ -124,13 +148,13 @@ impl AppCtx {
 
     fn active_channel(&self) -> Option<Channel> {
         match self.active_view.get() {
-            ActiveView::Home => None,
             ActiveView::Channel(id) => self
                 .channels
                 .borrow()
                 .iter()
                 .find(|c| c.id == id)
                 .cloned(),
+            _ => None,
         }
     }
 
@@ -201,6 +225,16 @@ impl AppCtx {
             self.home_row_btn.add_css_class("koma-home-active");
         } else {
             self.home_row_btn.remove_css_class("koma-home-active");
+        }
+        if active == ActiveView::Throwaway {
+            self.throwaway_row_btn.add_css_class("koma-home-active");
+        } else {
+            self.throwaway_row_btn.remove_css_class("koma-home-active");
+        }
+        if active == ActiveView::Files {
+            self.files_row_btn.add_css_class("koma-home-active");
+        } else {
+            self.files_row_btn.remove_css_class("koma-home-active");
         }
 
         let editing_id = self.editing_channel_id.get();
@@ -367,7 +401,7 @@ impl AppCtx {
             ImageSort::Oldest => " · Oldest",
         };
         let (channel_id, title, sub, is_home) = match active {
-            ActiveView::Home => {
+            ActiveView::Home | ActiveView::Throwaway | ActiveView::Files => {
                 let total: i64 = self.channels.borrow().iter().map(|c| c.image_count).sum();
                 (
                     None,
@@ -430,26 +464,38 @@ impl AppCtx {
     }
 
     fn select_view(self: &Rc<Self>, view: ActiveView) {
-        let same_view = self.active_view.get() == view
-            && self.content_stack.visible_child_name().as_deref() == Some("gallery");
-        self.close_lightbox();
+        let was_lightbox = self.content_stack.visible_child_name().as_deref() == Some("lightbox");
+        let same_view = self.active_view.get() == view && !was_lightbox;
+        if was_lightbox {
+            self.close_lightbox();
+        }
         self.active_view.set(view);
         self.select_mode.set(false);
         self.select_toggle.set_active(false);
 
+        if self.left_split.is_collapsed() {
+            self.left_split.set_show_sidebar(false);
+            self.sidebar_toggle_btn.set_active(false);
+        }
+
+        if let Some(bucket) = view.transfer_bucket() {
+            self.set_inspector_visible(false);
+            self.rebuild_sidebar();
+            self.rebuild_transfers_view(bucket);
+            self.content_stack.set_visible_child_name("transfers");
+            self.sync.refresh_transfers();
+            return;
+        }
+
+        self.content_stack.set_visible_child_name("gallery");
         if !same_view {
             let default_mode = match view {
                 ActiveView::Home => "timeline",
-                ActiveView::Channel(_) => "grid",
+                _ => "grid",
             };
             *self.view_mode.borrow_mut() = default_mode.to_string();
             self.grid_toggle.set_active(default_mode == "grid");
             self.timeline_toggle.set_active(default_mode == "timeline");
-        }
-
-        if self.left_split.is_collapsed() {
-            self.left_split.set_show_sidebar(false);
-            self.sidebar_toggle_btn.set_active(false);
         }
 
         self.rebuild_sidebar();
@@ -457,7 +503,7 @@ impl AppCtx {
     }
 
     fn step_view(self: &Rc<Self>, delta: i32) {
-        let mut views = vec![ActiveView::Home];
+        let mut views = vec![ActiveView::Home, ActiveView::Throwaway, ActiveView::Files];
         for ch in self.channels.borrow().iter() {
             views.push(ActiveView::Channel(ch.id));
         }
@@ -468,6 +514,179 @@ impl AppCtx {
         if next != cur {
             self.select_view(next);
         }
+    }
+
+    fn rebuild_transfers_view(self: &Rc<Self>, bucket: TransferBucket) {
+        let items = match bucket {
+            TransferBucket::Throwaway => self.throwaway_files.borrow().clone(),
+            TransferBucket::Files => self.saved_files.borrow().clone(),
+        };
+        self.transfer_title.set_label(bucket.label());
+        self.transfer_sub.set_label(&format!("{} file(s)", items.len()));
+        self.transfer_banner.set_label(match bucket {
+            TransferBucket::Throwaway => {
+                "One-shot inbox: files delete from Google Drive automatically once downloaded on either device."
+            }
+            TransferBucket::Files => {
+                "Persistent work & general files synced in Google Drive (My Drive/koma/.files)."
+            }
+        });
+
+        while let Some(child) = self.transfer_list.first_child() {
+            self.transfer_list.remove(&child);
+        }
+
+        if items.is_empty() {
+            let empty = gtk4::Label::builder()
+                .label("Drop any file here, press Ctrl+V, or click Upload.")
+                .halign(gtk4::Align::Center)
+                .margin_top(48)
+                .css_classes(["dim-label"])
+                .build();
+            self.transfer_list.append(&empty);
+            return;
+        }
+
+        let downloads_dir = default_downloads_dir();
+        for file in items {
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+            row.add_css_class("koma-transfer-row");
+
+            let ext_tag = std::path::Path::new(&file.filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_uppercase())
+                .filter(|s| !s.is_empty() && s.len() <= 5)
+                .unwrap_or_else(|| "FILE".to_string());
+            let badge = gtk4::Label::builder()
+                .label(&ext_tag)
+                .valign(gtk4::Align::Center)
+                .css_classes(["koma-ext-badge"])
+                .build();
+
+            let info = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+            info.set_hexpand(true);
+            let name_lbl = gtk4::Label::builder()
+                .label(&file.filename)
+                .xalign(0.0)
+                .ellipsize(gtk4::pango::EllipsizeMode::Middle)
+                .css_classes(["koma-inspector-filename"])
+                .build();
+            let meta_lbl = gtk4::Label::builder()
+                .label(format_bytes(file.size_bytes))
+                .xalign(0.0)
+                .css_classes(["koma-tabular"])
+                .build();
+            info.append(&name_lbl);
+            info.append(&meta_lbl);
+
+            let save_btn = gtk4::Button::builder()
+                .label(if bucket == TransferBucket::Throwaway {
+                    "Save & Clear"
+                } else {
+                    "Save"
+                })
+                .valign(gtk4::Align::Center)
+                .css_classes(if bucket == TransferBucket::Throwaway {
+                    ["flat", "koma-accent-btn"]
+                } else {
+                    ["flat", "koma-action-btn"]
+                })
+                .build();
+            let ctx_dl = self.clone();
+            let file_dl = file.clone();
+            let dir_dl = downloads_dir.clone();
+            save_btn.connect_clicked(move |_| {
+                ctx_dl.toast(&format!("Downloading {}...", file_dl.filename));
+                ctx_dl.sync.download_transfer(
+                    bucket,
+                    file_dl.clone(),
+                    dir_dl.clone(),
+                    bucket == TransferBucket::Throwaway,
+                );
+                if bucket == TransferBucket::Throwaway {
+                    ctx_dl
+                        .throwaway_files
+                        .borrow_mut()
+                        .retain(|f| f.remote_id != file_dl.remote_id);
+                    let remaining = ctx_dl.throwaway_files.borrow().len();
+                    let lbl = if remaining == 0 {
+                        String::new()
+                    } else {
+                        remaining.to_string()
+                    };
+                    ctx_dl.throwaway_count_lbl.set_label(&lbl);
+                    ctx_dl.rebuild_transfers_view(bucket);
+                }
+            });
+
+            let del_btn = gtk4::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Delete")
+                .valign(gtk4::Align::Center)
+                .css_classes(["flat", "koma-ghost-btn", "destructive-action"])
+                .build();
+            let ctx_del = self.clone();
+            let rid = file.remote_id.clone();
+            let fname = file.filename.clone();
+            del_btn.connect_clicked(move |_| {
+                ctx_del.sync.delete_transfer(bucket, rid.clone(), fname.clone());
+                match bucket {
+                    TransferBucket::Throwaway => {
+                        ctx_del
+                            .throwaway_files
+                            .borrow_mut()
+                            .retain(|f| f.remote_id != rid);
+                        let n = ctx_del.throwaway_files.borrow().len();
+                        let lbl = if n == 0 { String::new() } else { n.to_string() };
+                        ctx_del.throwaway_count_lbl.set_label(&lbl);
+                    }
+                    TransferBucket::Files => {
+                        ctx_del
+                            .saved_files
+                            .borrow_mut()
+                            .retain(|f| f.remote_id != rid);
+                        let n = ctx_del.saved_files.borrow().len();
+                        let lbl = if n == 0 { String::new() } else { n.to_string() };
+                        ctx_del.files_count_lbl.set_label(&lbl);
+                    }
+                }
+                ctx_del.rebuild_transfers_view(bucket);
+            });
+
+            row.append(&badge);
+            row.append(&info);
+            row.append(&save_btn);
+            row.append(&del_btn);
+            self.transfer_list.append(&row);
+        }
+    }
+
+    fn open_transfer_upload_dialog(self: &Rc<Self>, bucket: TransferBucket) {
+        let dialog = gtk4::FileDialog::builder()
+            .title(format!("Upload to {}", bucket.label()))
+            .build();
+        let ctx = self.clone();
+        dialog.open_multiple(Some(&self.window), gio::Cancellable::NONE, move |res| {
+            if let Ok(list) = res {
+                let mut paths = Vec::new();
+                for i in 0..list.n_items() {
+                    if let Some(file) = list.item(i).and_downcast::<gio::File>()
+                        && let Some(path) = file.path()
+                    {
+                        paths.push(path);
+                    }
+                }
+                if !paths.is_empty() {
+                    ctx.toast(&format!(
+                        "Uploading {} file(s) to {}...",
+                        paths.len(),
+                        bucket.label()
+                    ));
+                    ctx.sync.upload_transfers(bucket, paths);
+                }
+            }
+        });
     }
 
     fn set_inspector_visible(&self, show: bool) {
@@ -541,8 +760,32 @@ impl AppCtx {
     }
 
     fn paste_from_clipboard(self: &Rc<Self>) {
+        if let Some(bucket) = self.active_view.get().transfer_bucket() {
+            let clipboard = gtk4::prelude::WidgetExt::display(&self.window).clipboard();
+            let ctx = self.clone();
+            clipboard.read_texture_async(gio::Cancellable::NONE, move |res| match res {
+                Ok(Some(tex)) => {
+                    let png = tex.save_to_png_bytes();
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let fname = format!("clipboard_{ts}.png");
+                    ctx.toast(&format!("Uploading {fname} to {}...", bucket.label()));
+                    ctx.sync.upload_transfer_bytes(
+                        bucket,
+                        fname,
+                        "image/png".to_string(),
+                        png.as_ref().to_vec(),
+                    );
+                }
+                Ok(None) => ctx.toast("Clipboard does not contain an image"),
+                Err(e) => ctx.toast(&format!("Clipboard read failed: {e}")),
+            });
+            return;
+        }
         let Some(ch) = self.active_channel() else {
-            self.toast("Select a channel first before pasting");
+            self.toast("Select a channel, Throwaway, or Files first before pasting");
             return;
         };
         let clipboard = gtk4::prelude::WidgetExt::display(&self.window).clipboard();
@@ -569,8 +812,17 @@ impl AppCtx {
     }
 
     fn ingest_paths(self: &Rc<Self>, paths: &[PathBuf]) {
+        if let Some(bucket) = self.active_view.get().transfer_bucket() {
+            self.toast(&format!(
+                "Uploading {} file(s) to {}...",
+                paths.len(),
+                bucket.label()
+            ));
+            self.sync.upload_transfers(bucket, paths.to_vec());
+            return;
+        }
         let Some(ch) = self.active_channel() else {
-            self.toast("Select a channel first before uploading files");
+            self.toast("Select a channel, Throwaway, or Files first before uploading");
             return;
         };
         let mut saved = 0usize;
@@ -899,7 +1151,14 @@ impl AppCtx {
     }
 
     fn close_lightbox(&self) {
-        self.content_stack.set_visible_child_name("gallery");
+        if self.content_stack.visible_child_name().as_deref() == Some("lightbox") {
+            let target = if self.active_view.get().transfer_bucket().is_some() {
+                "transfers"
+            } else {
+                "gallery"
+            };
+            self.content_stack.set_visible_child_name(target);
+        }
         let ins = self.inspector.borrow().clone();
         if let Some(ins) = ins {
             ins.set_lightbox_mode(false);
@@ -928,6 +1187,15 @@ impl AppCtx {
 }
 
 pub fn build_ui(app: &adw::Application) {
+    if let Some(window) = app
+        .active_window()
+        .or_else(|| app.windows().into_iter().next())
+    {
+        window.present();
+        return;
+    }
+    gtk4::Window::set_default_icon_name(crate::APP_ID);
+
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(include_str!("style.css"));
     let theme_monitor = if let Some(display) = gdk::Display::default() {
@@ -1060,10 +1328,62 @@ pub fn build_ui(app: &adw::Application) {
         .child(&home_inner)
         .margin_start(8)
         .margin_end(8)
-        .margin_bottom(10)
+        .margin_bottom(2)
         .css_classes(["flat", "koma-home-btn"])
         .build();
     sidebar.append(&home_row_btn);
+
+    let throwaway_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 7);
+    let throwaway_icon = gtk4::Image::from_icon_name("mail-send-symbolic");
+    throwaway_icon.set_pixel_size(14);
+    let throwaway_count_lbl = gtk4::Label::builder()
+        .label("")
+        .css_classes(["koma-tabular"])
+        .build();
+    throwaway_inner.append(&throwaway_icon);
+    throwaway_inner.append(
+        &gtk4::Label::builder()
+            .label("Throwaway")
+            .xalign(0.0)
+            .hexpand(true)
+            .build(),
+    );
+    throwaway_inner.append(&throwaway_count_lbl);
+    let throwaway_row_btn = gtk4::Button::builder()
+        .child(&throwaway_inner)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_bottom(2)
+        .tooltip_text("One-shot transfers (auto-deletes after download)")
+        .css_classes(["flat", "koma-home-btn"])
+        .build();
+    sidebar.append(&throwaway_row_btn);
+
+    let files_inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 7);
+    let files_icon = gtk4::Image::from_icon_name("folder-documents-symbolic");
+    files_icon.set_pixel_size(14);
+    let files_count_lbl = gtk4::Label::builder()
+        .label("")
+        .css_classes(["koma-tabular"])
+        .build();
+    files_inner.append(&files_icon);
+    files_inner.append(
+        &gtk4::Label::builder()
+            .label("Files")
+            .xalign(0.0)
+            .hexpand(true)
+            .build(),
+    );
+    files_inner.append(&files_count_lbl);
+    let files_row_btn = gtk4::Button::builder()
+        .child(&files_inner)
+        .margin_start(8)
+        .margin_end(8)
+        .margin_bottom(10)
+        .tooltip_text("Persistent general files synced with Google Drive")
+        .css_classes(["flat", "koma-home-btn"])
+        .build();
+    sidebar.append(&files_row_btn);
 
     let ch_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     ch_header.set_margin_start(14);
@@ -1314,6 +1634,69 @@ pub fn build_ui(app: &adw::Application) {
     canvas_col.append(&width_sensor);
     canvas_col.append(&canvas_overlay);
 
+    // === THROWAWAY & FILES PAGE (floating glass island) ===
+    let transfer_topbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    transfer_topbar.add_css_class("koma-topbar");
+    let transfer_title = gtk4::Label::builder()
+        .label("Throwaway")
+        .css_classes(["koma-channel-title"])
+        .build();
+    let transfer_sub = gtk4::Label::builder()
+        .label("0 file(s)")
+        .css_classes(["koma-title-count"])
+        .build();
+    let transfer_spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    transfer_spacer.set_hexpand(true);
+    let transfer_refresh_btn = gtk4::Button::builder()
+        .icon_name("view-refresh-symbolic")
+        .tooltip_text("Refresh from Google Drive")
+        .css_classes(["flat", "koma-ghost-btn"])
+        .build();
+    let transfer_upload_btn = gtk4::Button::builder()
+        .label("Upload files")
+        .css_classes(["flat", "koma-accent-btn"])
+        .build();
+    transfer_topbar.append(&transfer_title);
+    transfer_topbar.append(&transfer_sub);
+    transfer_topbar.append(&transfer_spacer);
+    transfer_topbar.append(&transfer_refresh_btn);
+    transfer_topbar.append(&transfer_upload_btn);
+
+    let transfer_topbar_handle = gtk4::WindowHandle::new();
+    transfer_topbar_handle.set_child(Some(&transfer_topbar));
+
+    let transfer_banner = gtk4::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_top(12)
+        .margin_bottom(4)
+        .css_classes(["koma-meta-key"])
+        .build();
+
+    let transfer_list = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    transfer_list.set_margin_start(16);
+    transfer_list.set_margin_end(16);
+    transfer_list.set_margin_top(8);
+    transfer_list.set_margin_bottom(24);
+
+    let transfer_scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vexpand(true)
+        .hexpand(true)
+        .child(&transfer_list)
+        .build();
+
+    let transfers_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    transfers_page.add_css_class("koma-gallery-island");
+    transfers_page.set_overflow(gtk4::Overflow::Hidden);
+    transfers_page.set_hexpand(true);
+    transfers_page.set_vexpand(true);
+    transfers_page.append(&transfer_topbar_handle);
+    transfers_page.append(&transfer_banner);
+    transfers_page.append(&transfer_scroll);
+
     // Lightbox and Gallery share the right Inspector sidebar while keeping the left channel sidebar open.
     let content_stack = gtk4::Stack::new();
     content_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
@@ -1321,6 +1704,7 @@ pub fn build_ui(app: &adw::Application) {
     content_stack.set_hexpand(true);
     content_stack.set_vexpand(true);
     content_stack.add_named(&canvas_col, Some("gallery"));
+    content_stack.add_named(&transfers_page, Some("transfers"));
 
     // Pinned right Inspector resizes the gallery cleanly so topbar controls (Select/Zoom) stay visible.
     let inspector_split = adw::OverlaySplitView::builder()
@@ -1397,6 +1781,10 @@ pub fn build_ui(app: &adw::Application) {
         sync_dot,
         sync_label,
         home_row_btn: home_row_btn.clone(),
+        throwaway_row_btn: throwaway_row_btn.clone(),
+        throwaway_count_lbl,
+        files_row_btn: files_row_btn.clone(),
+        files_count_lbl,
         new_ch_revealer: new_ch_revealer.clone(),
         new_ch_entry: new_ch_entry.clone(),
         editing_channel_id: Cell::new(None),
@@ -1416,6 +1804,12 @@ pub fn build_ui(app: &adw::Application) {
         grid_canvas: RefCell::new(None),
         inspector: RefCell::new(None),
         lightbox: RefCell::new(None),
+        throwaway_files: RefCell::new(Vec::new()),
+        saved_files: RefCell::new(Vec::new()),
+        transfer_title,
+        transfer_sub,
+        transfer_banner,
+        transfer_list,
     });
 
     // Build GridCanvas (double-click toggles Inspector on same image)
@@ -1590,6 +1984,22 @@ pub fn build_ui(app: &adw::Application) {
 
     let c = ctx.clone();
     home_row_btn.connect_clicked(move |_| c.select_view(ActiveView::Home));
+
+    let c = ctx.clone();
+    throwaway_row_btn.connect_clicked(move |_| c.select_view(ActiveView::Throwaway));
+
+    let c = ctx.clone();
+    files_row_btn.connect_clicked(move |_| c.select_view(ActiveView::Files));
+
+    let c = ctx.clone();
+    transfer_refresh_btn.connect_clicked(move |_| c.sync.refresh_transfers());
+
+    let c = ctx.clone();
+    transfer_upload_btn.connect_clicked(move |_| {
+        if let Some(bucket) = c.active_view.get().transfer_bucket() {
+            c.open_transfer_upload_dialog(bucket);
+        }
+    });
 
     let c = ctx.clone();
     let ch_sort_anchor = ch_sort_btn.clone();
@@ -1989,10 +2399,21 @@ pub fn build_ui(app: &adw::Application) {
 
     ctx.apply_sync_status(SyncStatus::LocalOnly);
     let weak_ctx = Rc::downgrade(&ctx);
+    let poll_ticks = Rc::new(Cell::new(0u32));
     glib::timeout_add_local(Duration::from_millis(250), move || {
         let Some(ctx) = weak_ctx.upgrade() else {
             return glib::ControlFlow::Break;
         };
+        let ticks = poll_ticks.get().wrapping_add(1);
+        poll_ticks.set(ticks);
+        // Auto-refresh Throwaway every 5s while actively viewing it so files cleared on phone disappear live.
+        if ticks % 20 == 0
+            && ctx.active_view.get() == ActiveView::Throwaway
+            && ctx.window.is_active()
+            && *ctx.sync_status.borrow() != SyncStatus::LocalOnly
+        {
+            ctx.sync.refresh_transfers();
+        }
         for evt in ctx.sync.poll_events() {
             match evt {
                 SyncEvent::StatusChanged(status) => ctx.apply_sync_status(status),
@@ -2011,6 +2432,26 @@ pub fn build_ui(app: &adw::Application) {
                 SyncEvent::AuthFinished(Err(e)) => {
                     ctx.toast(&format!("Google Drive auth failed: {e}"))
                 }
+                SyncEvent::TransfersUpdated { throwaway, files } => {
+                    let t_label = if throwaway.is_empty() {
+                        String::new()
+                    } else {
+                        throwaway.len().to_string()
+                    };
+                    let f_label = if files.is_empty() {
+                        String::new()
+                    } else {
+                        files.len().to_string()
+                    };
+                    ctx.throwaway_count_lbl.set_label(&t_label);
+                    ctx.files_count_lbl.set_label(&f_label);
+                    *ctx.throwaway_files.borrow_mut() = throwaway;
+                    *ctx.saved_files.borrow_mut() = files;
+                    if let Some(bucket) = ctx.active_view.get().transfer_bucket() {
+                        ctx.rebuild_transfers_view(bucket);
+                    }
+                }
+                SyncEvent::TransferToast(msg) => ctx.toast(&msg),
             }
         }
         glib::ControlFlow::Continue
@@ -2523,6 +2964,13 @@ fn present_confirm_dialog(
     glib::idle_add_local_once(move || {
         focus_btn.grab_focus();
     });
+}
+
+fn default_downloads_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(home).join("Downloads");
+    }
+    PathBuf::from("/tmp")
 }
 
 fn format_int(n: i64) -> String {

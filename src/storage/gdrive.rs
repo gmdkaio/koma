@@ -19,7 +19,15 @@ const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const ROOT_FOLDER_NAME: &str = "koma";
-const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct TransferFile {
+    pub remote_id: String,
+    pub filename: String,
+    pub size_bytes: u64,
+    pub created_time: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GDriveClientConfig {
@@ -64,6 +72,10 @@ struct DriveFileItem {
     mime_type: String,
     #[serde(default)]
     parents: Option<Vec<String>>,
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(rename = "createdTime", default)]
+    created_time: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,7 +426,7 @@ impl GDriveBackend {
                 .query("q", q)
                 .query("spaces", "drive")
                 .query("pageSize", "1000")
-                .query("fields", "nextPageToken,files(id,name,mimeType,parents)");
+                .query("fields", "nextPageToken,files(id,name,mimeType,parents,size,createdTime)");
             if let Some(ref tok) = page_token {
                 req = req.query("pageToken", tok);
             }
@@ -433,6 +445,139 @@ impl GDriveBackend {
             }
         }
         Ok(out)
+    }
+
+    pub fn list_special_files(&self, folder_name: &str) -> Result<Vec<TransferFile>, String> {
+        let root_id = self.ensure_root_folder()?;
+        let fq = format!(
+            "mimeType = '{FOLDER_MIME}' and name = '{}' and '{}' in parents and trashed = false",
+            escape_query(folder_name),
+            escape_query(&root_id)
+        );
+        let Some(folder) = self.query_files(&fq)?.into_iter().next() else {
+            return Ok(Vec::new());
+        };
+        let q = format!(
+            "mimeType != '{FOLDER_MIME}' and '{}' in parents and trashed = false",
+            escape_query(&folder.id)
+        );
+        let mut items: Vec<TransferFile> = self
+            .query_files(&q)?
+            .into_iter()
+            .map(|f| TransferFile {
+                remote_id: f.id,
+                filename: f.name,
+                size_bytes: f
+                    .size
+                    .as_deref()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0),
+                created_time: f.created_time.unwrap_or_default(),
+            })
+            .collect();
+        items.sort_by(|a, b| b.created_time.cmp(&a.created_time));
+        Ok(items)
+    }
+
+    pub fn upload_special_file(
+        &self,
+        folder_name: &str,
+        local_path: &Path,
+    ) -> Result<TransferFile, String> {
+        let filename = local_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| "invalid file name".to_string())?;
+        let bytes = fs::read(local_path)
+            .map_err(|e| format!("failed to read {}: {e}", local_path.display()))?;
+        let mime = guess_mime_from_path(local_path);
+        self.upload_special_bytes(folder_name, filename, mime, &bytes)
+    }
+
+    pub fn upload_special_bytes(
+        &self,
+        folder_name: &str,
+        filename: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<TransferFile, String> {
+        let folder_id = self.ensure_channel_folder(folder_name)?;
+        let auth = self.auth_header()?;
+        let boundary = format!("koma_boundary_{}", random_hex(12)?);
+
+        let meta_json = serde_json::json!({
+            "name": filename,
+            "parents": [folder_id],
+        })
+        .to_string();
+
+        let mut body = Vec::with_capacity(bytes.len() + meta_json.len() + 256);
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(b"Content-Type: application/json; charset=UTF-8\r\n\r\n");
+        body.extend_from_slice(meta_json.as_bytes());
+        body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(format!("Content-Type: {mime_type}\r\n\r\n").as_bytes());
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let ct = format!("multipart/related; boundary={boundary}");
+        let uploaded: DriveFileItem = self
+            .agent
+            .post(DRIVE_UPLOAD_BASE)
+            .header("Authorization", &auth)
+            .header("Content-Type", &ct)
+            .query("uploadType", "multipart")
+            .query("fields", "id,name,mimeType,size,createdTime")
+            .send(body.as_slice())
+            .map_err(|e| format!("Drive upload {filename} failed: {e}"))?
+            .body_mut()
+            .read_json()
+            .map_err(|e| format!("Drive parse upload response failed: {e}"))?;
+
+        Ok(TransferFile {
+            remote_id: uploaded.id,
+            filename: uploaded.name,
+            size_bytes: uploaded
+                .size
+                .as_deref()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(bytes.len() as u64),
+            created_time: uploaded.created_time.unwrap_or_default(),
+        })
+    }
+}
+
+pub fn guess_mime_from_path(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        "txt" | "md" | "log" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "apk" => "application/vnd.android.package-archive",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
     }
 }
 

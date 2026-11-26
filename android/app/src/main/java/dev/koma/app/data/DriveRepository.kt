@@ -59,9 +59,15 @@ class DriveRepository(
         )
 
         val channelMap = LinkedHashMap<String, String>()
+        var throwawayFolderId: String? = null
+        var filesFolderId: String? = null
         for (f in folderRows) {
-            if (!f.name.startsWith(".")) {
-                channelMap[f.id] = f.name
+            when (f.name) {
+                FileBucket.THROWAWAY.folderName -> throwawayFolderId = f.id
+                FileBucket.FILES.folderName -> filesFolderId = f.id
+                else -> if (!f.name.startsWith(".")) {
+                    channelMap[f.id] = f.name
+                }
             }
         }
 
@@ -86,6 +92,23 @@ class DriveRepository(
 
         images.sortByDescending { it.createdAtMillis }
 
+        val transferFiles = ArrayList<DriveTransferFile>()
+        val specialPairs = listOfNotNull(
+            throwawayFolderId?.let { it to FileBucket.THROWAWAY },
+            filesFolderId?.let { it to FileBucket.FILES },
+        )
+        for ((folderId, bucket) in specialPairs) {
+            val rows = listFiles(
+                token = token,
+                query = "mimeType != '$FOLDER_MIME' and '$folderId' in parents and trashed = false",
+                fields = "nextPageToken,files(id,name,mimeType,size,createdTime)",
+            )
+            for (r in rows) {
+                transferFiles.add(r.toTransferFile(bucket))
+            }
+        }
+        transferFiles.sortByDescending { it.createdAtMillis }
+
         val channels = channelMap.entries
             .map { (id, slug) -> DriveChannel(id = id, slug = slug, imageCount = counts[id] ?: 0) }
             .sortedWith(compareByDescending<DriveChannel> { it.imageCount }.thenBy { it.slug })
@@ -94,6 +117,9 @@ class DriveRepository(
             rootFolderId = rootId,
             channels = channels,
             images = images,
+            throwawayFolderId = throwawayFolderId,
+            filesFolderId = filesFolderId,
+            transferFiles = transferFiles,
         )
         saveCachedCatalog(catalog)
         catalog
@@ -263,6 +289,169 @@ class DriveRepository(
         }
     }
 
+    suspend fun ensureSpecialFolder(rootFolderId: String, bucket: FileBucket): String =
+        withContext(Dispatchers.IO) {
+            val token = auth.getValidAccessToken()
+            val existing = listFiles(
+                token = token,
+                query = "mimeType = '$FOLDER_MIME' and name = '${escapeQuery(bucket.folderName)}' and '$rootFolderId' in parents and trashed = false",
+                fields = "files(id,name)",
+            ).firstOrNull()
+            if (existing != null) return@withContext existing.id
+
+            val payload = json.encodeToString(
+                CreateFolderBody(
+                    name = bucket.folderName,
+                    mimeType = FOLDER_MIME,
+                    parents = listOf(rootFolderId),
+                )
+            )
+            val req = Request.Builder()
+                .url("https://www.googleapis.com/drive/v3/files?fields=id,name")
+                .header("Authorization", "Bearer $token")
+                .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+            http.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) error("Could not create ${bucket.label} folder (${resp.code}): $raw")
+                json.decodeFromString<DriveFileDto>(raw).id
+            }
+        }
+
+    suspend fun uploadTransferFiles(
+        folderId: String,
+        bucket: FileBucket,
+        uris: List<Uri>,
+        contentResolver: ContentResolver,
+    ): List<DriveTransferFile> = withContext(Dispatchers.IO) {
+        val token = auth.getValidAccessToken()
+        val gate = Semaphore(3)
+        coroutineScope {
+            uris.mapIndexed { idx, uri ->
+                async(Dispatchers.IO) {
+                    gate.withPermit {
+                        val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                        val filename = queryDisplayName(contentResolver, uri)
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "file_${System.currentTimeMillis()}_$idx.${extFromMime(mime, null)}"
+                        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            ?: error("Could not read file")
+
+                        val metadataJson = json.encodeToString(
+                            UploadMetaBody(
+                                name = filename,
+                                parents = listOf(folderId),
+                            )
+                        )
+                        val boundary = "koma_${System.nanoTime()}"
+                        val multipart = ByteArrayOutputStream().apply {
+                            write("--$boundary\r\n".toByteArray())
+                            write("Content-Type: application/json; charset=UTF-8\r\n\r\n".toByteArray())
+                            write(metadataJson.toByteArray(Charsets.UTF_8))
+                            write("\r\n--$boundary\r\n".toByteArray())
+                            write("Content-Type: $mime\r\n\r\n".toByteArray())
+                            write(bytes)
+                            write("\r\n--$boundary--\r\n".toByteArray())
+                        }.toByteArray()
+
+                        val url = "https://www.googleapis.com/upload/drive/v3/files".toHttpUrl()
+                            .newBuilder()
+                            .addQueryParameter("uploadType", "multipart")
+                            .addQueryParameter("fields", "id,name,mimeType,size,createdTime")
+                            .build()
+
+                        val req = Request.Builder()
+                            .url(url)
+                            .header("Authorization", "Bearer $token")
+                            .post(multipart.toRequestBody("multipart/related; boundary=$boundary".toMediaType()))
+                            .build()
+
+                        http.newCall(req).execute().use { resp ->
+                            val raw = resp.body?.string().orEmpty()
+                            if (!resp.isSuccessful) error("Upload failed (${resp.code}): $raw")
+                            json.decodeFromString<DriveFileDto>(raw).toTransferFile(bucket)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    suspend fun downloadTransferFile(file: DriveTransferFile): File = withContext(Dispatchers.IO) {
+        val safeName = "${file.id}_${file.filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
+        val dest = File(shareDir, safeName)
+        if (dest.exists() && dest.length() > 0L) {
+            return@withContext dest
+        }
+        val token = auth.getValidAccessToken()
+        val req = Request.Builder()
+            .url("https://www.googleapis.com/drive/v3/files/${file.id}?alt=media")
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        http.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("Download failed (${resp.code})")
+            val tmp = File(shareDir, "$safeName.tmp")
+            resp.body?.byteStream()?.use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            } ?: error("Empty download response")
+            if (!tmp.renameTo(dest)) {
+                tmp.copyTo(dest, overwrite = true)
+                tmp.delete()
+            }
+            dest
+        }
+    }
+
+    suspend fun deleteTransferFile(fileId: String) = withContext(Dispatchers.IO) {
+        val token = auth.getValidAccessToken()
+        val body = """{"trashed":true}""".toRequestBody(JSON_MEDIA_TYPE)
+        val req = Request.Builder()
+            .url("https://www.googleapis.com/drive/v3/files/$fileId")
+            .header("Authorization", "Bearer $token")
+            .patch(body)
+            .build()
+        http.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful && resp.code != 404) {
+                val raw = resp.body?.string().orEmpty()
+                error("Delete failed (${resp.code}): $raw")
+            }
+        }
+    }
+
+    suspend fun syncTransfersOnly(rootFolderId: String): Triple<String?, String?, List<DriveTransferFile>> =
+        withContext(Dispatchers.IO) {
+            val token = auth.getValidAccessToken()
+            val folders = listFiles(
+                token = token,
+                query = "mimeType = '$FOLDER_MIME' and '$rootFolderId' in parents and trashed = false",
+                fields = "files(id,name)",
+            )
+            var throwId: String? = null
+            var filesId: String? = null
+            for (f in folders) {
+                when (f.name) {
+                    FileBucket.THROWAWAY.folderName -> throwId = f.id
+                    FileBucket.FILES.folderName -> filesId = f.id
+                }
+            }
+            val out = ArrayList<DriveTransferFile>()
+            val pairs = listOfNotNull(
+                throwId?.let { it to FileBucket.THROWAWAY },
+                filesId?.let { it to FileBucket.FILES },
+            )
+            for ((fid, bucket) in pairs) {
+                val rows = listFiles(
+                    token = token,
+                    query = "mimeType != '$FOLDER_MIME' and '$fid' in parents and trashed = false",
+                    fields = "nextPageToken,files(id,name,mimeType,size,createdTime)",
+                )
+                for (r in rows) out.add(r.toTransferFile(bucket))
+            }
+            out.sortByDescending { it.createdAtMillis }
+            Triple(throwId, filesId, out)
+        }
+
     suspend fun downloadOriginal(image: DriveImage): File = withContext(Dispatchers.IO) {
         val safeName = "${image.id}_${image.filename.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
         val dest = File(shareDir, safeName)
@@ -387,6 +576,20 @@ class DriveRepository(
                 createdAtIso = createdTime.orEmpty(),
                 createdAtMillis = millis,
                 thumbnailLink = thumbnailLink,
+            )
+        }
+
+        fun toTransferFile(bucket: FileBucket): DriveTransferFile {
+            val millis = runCatching {
+                if (!createdTime.isNullOrBlank()) Instant.parse(createdTime).toEpochMilli() else 0L
+            }.getOrDefault(0L)
+            return DriveTransferFile(
+                id = id,
+                bucket = bucket,
+                filename = name,
+                mimeType = mimeType.ifBlank { "application/octet-stream" },
+                sizeBytes = size?.toLongOrNull() ?: 0L,
+                createdAtMillis = millis,
             )
         }
     }

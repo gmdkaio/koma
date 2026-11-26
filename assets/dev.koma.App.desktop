@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=koma
+GenericName=Image Organizer
+Comment=Channel-based image organizer synced with Google Drive
+Exec=koma
+Icon=dev.koma.App
+Terminal=false
+Categories=Graphics;Viewer;
+Keywords=images;screenshots;gallery;channels;drive;
+StartupNotify=true
+StartupWMClass=dev.koma.App
