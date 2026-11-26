@@ -71,7 +71,7 @@ window.koma-window.background.theme-dusk {
     --k-glass-popover: rgba(24, 19, 19, 0.96);
 }
 
-/* Built-in Theme: Manga Paper (warm vintage beige-kraft paper & espresso brown ink) */
+/* Built-in Theme: Gofun (warm vintage beige-kraft paper & espresso brown ink) */
 window.koma-window.theme-paper,
 window.koma-window.background.theme-paper {
     --k-bg: #ded1bc;

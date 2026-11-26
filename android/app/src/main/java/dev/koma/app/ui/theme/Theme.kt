@@ -47,7 +47,7 @@ val ObsidianPalette = KomaPalette(
     isDark = true,
 )
 
-val MangaPaperPalette = KomaPalette(
+val GofunPalette = KomaPalette(
     bg = Color(0xFFE8DDCA),
     surface = Color(0xFFDCCEB8),
     surfaceElevated = Color(0xFFD6C7AF),
@@ -74,7 +74,7 @@ fun KomaAppTheme(
 ) {
     val palette = when (theme) {
         KomaTheme.OBSIDIAN -> ObsidianPalette
-        KomaTheme.MANGA_PAPER -> MangaPaperPalette
+        KomaTheme.GOFUN -> GofunPalette
     }
 
     val colorScheme = if (palette.isDark) {

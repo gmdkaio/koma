@@ -74,7 +74,7 @@ data class CatalogCache(
 
 enum class KomaTheme(val key: String, val label: String) {
     OBSIDIAN("obsidian", "Obsidian"),
-    MANGA_PAPER("paper", "Manga Paper");
+    GOFUN("paper", "Gofun");
 
     companion object {
         fun fromKey(raw: String?): KomaTheme = entries.firstOrNull { it.key == raw } ?: OBSIDIAN

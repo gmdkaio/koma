@@ -6,7 +6,7 @@
 
 Ever had to use email or Discord to move files between your PC and your phone? Meet **koma**.
 
-Paste or upload an image from your PC and it shows up on your phone a moment later. Everything is stored in your own Google Drive, so your PC doesn't need to be on.
+Paste or upload an image from your PC and it shows up on your phone a moment later. Everything is stored in your own Google Drive, so your PC doesn't need to be on. Both apps keep a local copy and sync in the background, so they open fast and work offline.
 
 ## What you can do
 
@@ -15,19 +15,19 @@ Paste or upload an image from your PC and it shows up on your phone a moment lat
 - **Send any file with Throwaway.** Drop a file on one device, grab it on the other, and it deletes itself after the download.
 - **Keep work files in Files.** A plain stash for documents and anything else that isn't an image.
 - **Share from your phone.** Select a bunch of images and share or save them. You can also share to koma from any other app.
-- **Pick a look.** Obsidian (dark) or Manga Paper (light) on both devices.
+- **Pick a look.** Obsidian (dark) or Gofun (light) on both devices.
 
 ## Themes
 
-| Obsidian | Manga Paper |
+| Obsidian | Gofun |
 | :---: | :---: |
-| ![koma on desktop, Obsidian](assets/screenshots/desktop-obsidian.jpg) | ![koma on desktop, Manga Paper](assets/screenshots/desktop-paper.jpg) |
+| ![koma on desktop, Obsidian](assets/screenshots/desktop-obsidian.jpg) | ![koma on desktop, Gofun](assets/screenshots/desktop-paper.jpg) |
 
 ## On your phone
 
-| Obsidian | Obsidian, sidebar | Manga Paper | Manga Paper, sidebar |
+| Obsidian | Obsidian, sidebar | Gofun | Gofun, sidebar |
 | :---: | :---: | :---: | :---: |
-| ![Obsidian](assets/screenshots/phone-obsidian.jpg) | ![Obsidian sidebar](assets/screenshots/drawer-obsidian.jpg) | ![Manga Paper](assets/screenshots/phone-paper.jpg) | ![Manga Paper sidebar](assets/screenshots/drawer-paper.jpg) |
+| ![Obsidian](assets/screenshots/phone-obsidian.jpg) | ![Obsidian sidebar](assets/screenshots/drawer-obsidian.jpg) | ![Gofun](assets/screenshots/phone-paper.jpg) | ![Gofun sidebar](assets/screenshots/drawer-paper.jpg) |
 
 ## Get it
 

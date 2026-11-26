@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.uiState.collectAsState()
 
             LaunchedEffect(state.theme) {
-                val style = if (state.theme == KomaTheme.MANGA_PAPER) {
+                val style = if (state.theme == KomaTheme.GOFUN) {
                     SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
                 } else {
                     SystemBarStyle.dark(Color.TRANSPARENT)

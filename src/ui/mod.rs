@@ -2525,7 +2525,7 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
     ("inir", "iNiR Glass"),
     ("monochrome", "Monochrome"),
     ("dusk", "Warm Dusk"),
-    ("paper", "Manga Paper"),
+    ("paper", "Gofun"),
 ];
 
 fn apply_theme_class(window: &adw::ApplicationWindow, theme_id: &str) {
