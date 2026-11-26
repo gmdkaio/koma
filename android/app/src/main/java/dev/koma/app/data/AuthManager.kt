@@ -37,6 +37,12 @@ class AuthManager(
         prefs.edit().putString(KEY_THEME, theme.key).apply()
     }
 
+    fun loadChannelsCollapsed(): Boolean = prefs.getBoolean(KEY_CHANNELS_COLLAPSED, false)
+
+    fun saveChannelsCollapsed(collapsed: Boolean) {
+        prefs.edit().putBoolean(KEY_CHANNELS_COLLAPSED, collapsed).apply()
+    }
+
     suspend fun requestSignIn(): Result<SignInOutcome> = runCatching {
         val result = authClient.authorize(authRequest).await()
         if (result.hasResolution()) {
@@ -115,5 +121,6 @@ class AuthManager(
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_EXPIRES_AT = "expires_at"
         private const val KEY_THEME = "theme"
+        private const val KEY_CHANNELS_COLLAPSED = "channels_collapsed"
     }
 }

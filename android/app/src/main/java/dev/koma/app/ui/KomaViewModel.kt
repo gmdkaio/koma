@@ -40,6 +40,7 @@ data class KomaUiState(
     val busyMessage: String? = null,
     val toastMessage: String? = null,
     val theme: KomaTheme = KomaTheme.OBSIDIAN,
+    val channelsCollapsed: Boolean = false,
     val activeTab: ActiveTab = ActiveTab.Home,
     val sortOrder: SortOrder = SortOrder.NEWEST,
     val rootFolderId: String? = null,
@@ -130,6 +131,7 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
         KomaUiState(
             isSignedIn = auth.isSignedIn,
             theme = auth.loadTheme(),
+            channelsCollapsed = auth.loadChannelsCollapsed(),
         )
     )
     val uiState: StateFlow<KomaUiState> = _uiState.asStateFlow()
@@ -223,6 +225,12 @@ class KomaViewModel(application: Application) : AndroidViewModel(application) {
     fun setTheme(theme: KomaTheme) {
         auth.saveTheme(theme)
         _uiState.update { it.copy(theme = theme) }
+    }
+
+    fun toggleChannelsCollapsed() {
+        val collapsed = !_uiState.value.channelsCollapsed
+        auth.saveChannelsCollapsed(collapsed)
+        _uiState.update { it.copy(channelsCollapsed = collapsed) }
     }
 
     fun selectTab(tab: ActiveTab) {

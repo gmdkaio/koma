@@ -76,6 +76,7 @@ struct AppCtx {
     new_ch_entry: gtk4::Entry,
     editing_channel_id: Cell<Option<i64>>,
     channel_list: gtk4::ListBox,
+    ch_chevron: gtk4::Image,
     footer_count: gtk4::Label,
 
     // Topbar widgets
@@ -1036,7 +1037,21 @@ impl AppCtx {
         }
     }
 
+    fn set_channels_collapsed(&self, collapsed: bool) {
+        self.channel_list.set_visible(!collapsed);
+        self.ch_chevron.set_icon_name(Some(if collapsed {
+            "pan-end-symbolic"
+        } else {
+            "pan-down-symbolic"
+        }));
+        let _ = self
+            .store
+            .borrow()
+            .set_setting("channels_collapsed", if collapsed { "1" } else { "0" });
+    }
+
     fn begin_inline_create_channel(&self) {
+        self.set_channels_collapsed(false);
         self.new_ch_entry.set_text("");
         self.new_ch_revealer.set_reveal_child(true);
         let entry = self.new_ch_entry.clone();
@@ -1427,11 +1442,22 @@ pub fn build_ui(app: &adw::Application) {
     ch_header.set_margin_start(14);
     ch_header.set_margin_end(8);
     ch_header.set_margin_bottom(3);
+    let ch_chevron = gtk4::Image::from_icon_name("pan-down-symbolic");
+    ch_chevron.add_css_class("koma-section-label");
     let ch_label = gtk4::Label::builder()
         .label("CHANNELS")
         .xalign(0.0)
-        .hexpand(true)
         .css_classes(["koma-section-label"])
+        .build();
+    let ch_toggle_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+    ch_toggle_box.append(&ch_label);
+    ch_toggle_box.append(&ch_chevron);
+    let ch_toggle = gtk4::Button::builder()
+        .child(&ch_toggle_box)
+        .hexpand(true)
+        .halign(gtk4::Align::Start)
+        .css_classes(["flat", "koma-section-toggle"])
+        .tooltip_text("Show or hide channels")
         .build();
     let ch_sort_btn = gtk4::Button::builder()
         .icon_name("view-sort-descending-symbolic")
@@ -1443,7 +1469,7 @@ pub fn build_ui(app: &adw::Application) {
         .css_classes(["flat", "koma-ghost-btn"])
         .tooltip_text("New channel")
         .build();
-    ch_header.append(&ch_label);
+    ch_header.append(&ch_toggle);
     ch_header.append(&ch_sort_btn);
     ch_header.append(&new_ch_btn);
     sidebar.append(&ch_header);
@@ -1827,6 +1853,7 @@ pub fn build_ui(app: &adw::Application) {
         new_ch_entry: new_ch_entry.clone(),
         editing_channel_id: Cell::new(None),
         channel_list: channel_list.clone(),
+        ch_chevron,
         footer_count,
         title_hash,
         title_name,
@@ -2050,6 +2077,12 @@ pub fn build_ui(app: &adw::Application) {
 
     let c = ctx.clone();
     new_ch_btn.connect_clicked(move |_| c.begin_inline_create_channel());
+
+    if ctx.store.borrow().get_setting("channels_collapsed").as_deref() == Some("1") {
+        ctx.set_channels_collapsed(true);
+    }
+    let c = ctx.clone();
+    ch_toggle.connect_clicked(move |_| c.set_channels_collapsed(c.channel_list.is_visible()));
 
     let c_nc = ctx.clone();
     new_ch_entry.connect_activate(move |entry| {

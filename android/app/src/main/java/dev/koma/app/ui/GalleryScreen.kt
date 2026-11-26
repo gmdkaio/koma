@@ -46,9 +46,11 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Menu
@@ -182,6 +184,7 @@ fun GalleryScreen(
                     scope.launch { drawerState.close() }
                     viewModel.setShowCreateChannel(true)
                 },
+                onToggleChannels = viewModel::toggleChannelsCollapsed,
                 onSelectTheme = viewModel::setTheme,
                 onSignOut = {
                     scope.launch { drawerState.close() }
@@ -694,6 +697,7 @@ private fun ChannelDrawer(
     state: KomaUiState,
     onSelectTab: (ActiveTab) -> Unit,
     onNewChannel: () -> Unit,
+    onToggleChannels: () -> Unit,
     onSelectTheme: (KomaTheme) -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -773,15 +777,29 @@ private fun ChannelDrawer(
                     .padding(start = 18.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "CHANNELS",
-                    color = palette.muted,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.sp,
-                    modifier = Modifier.weight(1f),
-                )
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onToggleChannels)
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "CHANNELS",
+                        color = palette.muted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.sp,
+                    )
+                    Icon(
+                        if (state.channelsCollapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore,
+                        contentDescription = if (state.channelsCollapsed) "Show channels" else "Hide channels",
+                        tint = palette.muted,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
                 IconButton(onClick = onNewChannel, modifier = Modifier.size(32.dp)) {
                     Icon(
                         Icons.Rounded.Add,
@@ -796,7 +814,7 @@ private fun ChannelDrawer(
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
             ) {
-                items(state.channels, key = { it.id }) { ch ->
+                if (!state.channelsCollapsed) items(state.channels, key = { it.id }) { ch ->
                     val selected = (state.activeTab as? ActiveTab.Channel)?.id == ch.id
                     Row(
                         modifier = Modifier
