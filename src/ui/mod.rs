@@ -3099,6 +3099,10 @@ fn present_confirm_dialog(
 }
 
 fn default_downloads_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()) {
+        return PathBuf::from(profile).join("Downloads");
+    }
     if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(home).join("Downloads");
     }
